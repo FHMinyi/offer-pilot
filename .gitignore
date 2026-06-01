@@ -12,7 +12,7 @@ Thumbs.db
 !.env.example
 !.env.sample
 
-# Node.js / Next.js
+# Node.js / Vue / Vite
 node_modules/
 .next/
 out/

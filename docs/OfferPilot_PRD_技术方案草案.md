@@ -272,7 +272,7 @@ flowchart LR
 
 ### 9.2 技术选型建议
 
-- 前端：Next.js + React
+- 前端：Vue 3 + Vite + TypeScript
 - 后端：FastAPI
 - 工作流：先用轻量编排，后续再接 LangGraph
 - 数据库：PostgreSQL

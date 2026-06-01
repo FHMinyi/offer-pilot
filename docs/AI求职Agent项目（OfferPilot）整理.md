@@ -109,7 +109,7 @@ Result Output
 
 ## 技术栈建议
 
-- Frontend: Next.js + React
+- Frontend: Vue 3 + Vite + TypeScript
 - Backend: FastAPI
 - LLM: OpenAI / Claude
 - Workflow: LangGraph
