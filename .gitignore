@@ -1,0 +1,54 @@
+# 操作系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Node.js / Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python / FastAPI
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+htmlcov/
+*.egg-info/
+
+# 本地数据与运行产物
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+storage/
+tmp/
+logs/
+*.log
+
+# AI / 向量库 / 缓存
+.qdrant/
+chroma/
+.cache/
