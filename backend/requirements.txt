@@ -1,0 +1,17 @@
+# OfferPilot 后端依赖（MVP）
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+sqlalchemy==2.0.36
+python-multipart==0.0.20
+pypdf==5.1.0
+
+# LLM 客户端为可选依赖：未配置 API Key 时后端自动降级为规则解析，
+# 因此以下两个包不是运行 MVP 的必需项，按需安装即可。
+# openai==1.59.6
+# anthropic==0.42.0
+
+# 开发与测试
+pytest==8.3.4
+httpx==0.28.1
