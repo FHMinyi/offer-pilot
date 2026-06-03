@@ -19,6 +19,7 @@ out/
 dist/
 build/
 coverage/
+*.tsbuildinfo
 .pnpm-store/
 npm-debug.log*
 yarn-debug.log*
@@ -52,3 +53,6 @@ logs/
 .qdrant/
 chroma/
 .cache/
+
+# 本地工具链（非侵入式安装的 Node 等）
+.tooling/
