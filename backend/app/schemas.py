@@ -273,6 +273,13 @@ class WeekProgressItem(BaseModel):
     done: int
 
 
+class RecentDayItem(BaseModel):
+    """最近 N 天打卡热力的单元（E4 坚持天数可视化）：旧→今排列。"""
+
+    date: DateField
+    checked: bool
+
+
 class ProgressOut(BaseModel):
     total_tasks: int
     done_tasks: int
@@ -283,6 +290,8 @@ class ProgressOut(BaseModel):
     longest_streak: int
     last_checkin_date: date | None = None
     checked_in_today: bool
+    # E4 坚持天数可视化：最近 7 个自然日的打卡热力（旧→今，末位为今天）
+    recent_days: list[RecentDayItem] = Field(default_factory=list)
 
 
 class TaskPatchRequest(BaseModel):

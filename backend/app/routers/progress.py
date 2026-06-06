@@ -16,7 +16,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..models import CheckIn, JourneyState, Task
 from ..ownership import scope_to_user
-from ..schemas import ProgressOut, WeekProgressItem
+from ..schemas import ProgressOut, RecentDayItem, WeekProgressItem
 
 router = APIRouter(prefix="/api/progress", tags=["progress"])
 
@@ -58,10 +58,16 @@ def _streaks(dates: list[date], today: date) -> tuple[int, int]:
 @router.get("", response_model=ProgressOut)
 def get_progress(
     journey_id: int | None = None,
+    today: date | None = None,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ) -> ProgressOut:
-    """聚合当前旅程任务完成度 + 打卡 streak；空库返回零值（不报错）。"""
+    """聚合当前旅程任务完成度 + 打卡 streak；空库返回零值（不报错）。
+
+    today：客户端本地自然日（前端传 localTodayIso()）。打卡 date 存的是客户端本地日，
+    故 streak / checked_in_today / recent_days / current_week 都应以客户端「今天」为锚点，
+    与 /api/checkins、/api/journey/{id}/replan 同口径；缺省回退服务器当日。
+    """
     # 解析旅程：指定 journey_id 优先，否则取最新 active（scope_to_user 本期放行）
     if journey_id is not None:
         journey = db.get(JourneyState, journey_id)
@@ -98,11 +104,19 @@ def get_progress(
     # 打卡序列（scope_to_user 本期放行）
     cistmt = scope_to_user(select(CheckIn.date), CheckIn, user_id)
     dates = sorted({d for d in db.scalars(cistmt).all()})
+    dateset = set(dates)
 
-    today = date.today()
+    if today is None:
+        today = date.today()
     current_streak, longest_streak = _streaks(dates, today)
     last_checkin_date = dates[-1] if dates else None
-    checked_in_today = today in set(dates)
+    checked_in_today = today in dateset
+
+    # 最近 7 个自然日的打卡热力（旧→今）：复用上面的日期集合，零额外查询
+    recent_days = [
+        RecentDayItem(date=today - timedelta(days=i), checked=(today - timedelta(days=i)) in dateset)
+        for i in range(6, -1, -1)
+    ]
 
     # current_week：有 start_date 按自然周推算，否则取旅程登记值
     if journey is not None and journey.start_date is not None:
@@ -123,4 +137,5 @@ def get_progress(
         longest_streak=longest_streak,
         last_checkin_date=last_checkin_date,
         checked_in_today=checked_in_today,
+        recent_days=recent_days,
     )

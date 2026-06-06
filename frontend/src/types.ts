@@ -345,6 +345,12 @@ export interface WeekProgress {
   done: number
 }
 
+/** 最近 N 天打卡热力的单元（E4 坚持天数可视化，旧→今） */
+export interface RecentDay {
+  date: string // YYYY-MM-DD
+  checked: boolean
+}
+
 /** 进度汇总（GET /api/progress 实时聚合 + 惰性 streak） */
 export interface ProgressSummary {
   total_tasks: number
@@ -356,4 +362,5 @@ export interface ProgressSummary {
   longest_streak: number
   last_checkin_date: string | null
   checked_in_today: boolean
+  recent_days: RecentDay[] // E4：最近 7 个自然日打卡热力（旧→今，末位为今天）
 }

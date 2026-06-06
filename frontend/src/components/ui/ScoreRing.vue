@@ -128,6 +128,13 @@ const showCaption = computed(() => props.size >= 72)
     stroke 0.3s ease;
 }
 
+/* 无障碍：系统偏好「减少动态效果」时不扫动进度弧 */
+@media (prefers-reduced-motion: reduce) {
+  .ring__progress {
+    transition: none;
+  }
+}
+
 .ring__label {
   position: absolute;
   inset: 0;

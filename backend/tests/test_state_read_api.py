@@ -85,6 +85,56 @@ def test_progress_empty_returns_zeros(client):
     assert j["checked_in_today"] is False
     assert j["last_checkin_date"] is None
     assert j["current_week"] == 1
+    # E4：最近 7 天热力始终返回 7 个单元，末位为今天；空库下全部未打卡
+    assert len(j["recent_days"]) == 7
+    assert j["recent_days"][-1]["date"] == date.today().isoformat()
+    assert all(d["checked"] is False for d in j["recent_days"])
+    # 旧→今升序排列
+    seq = [d["date"] for d in j["recent_days"]]
+    assert seq == sorted(seq)
+
+
+def test_progress_recent_days_reflect_checkins(client):
+    info = _seed("local", weeks=4)
+    db = SessionLocal()
+    try:
+        today = date.today()
+        # 今天 + 前天打卡（昨天故意留空，验证逐日精确反映而非连续推断）；
+        # today-7 落在 7 天窗口之外，用于验证不被计入。
+        for d in (today, today - timedelta(days=2), today - timedelta(days=7)):
+            db.add(CheckIn(user_id="local", journey_id=info["journey_id"], date=d))
+        db.commit()
+    finally:
+        db.close()
+    days = client.get("/api/progress").json()["recent_days"]
+    rd = {d["date"]: d["checked"] for d in days}
+    today = date.today()
+    assert rd[today.isoformat()] is True
+    assert rd[(today - timedelta(days=2)).isoformat()] is True
+    assert rd[(today - timedelta(days=1)).isoformat()] is False
+    # 窗口恰为连续 7 个自然日（today-6 → today）；窗口外（today-7）的打卡不出现
+    assert [d["date"] for d in days] == [
+        (today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)
+    ]
+    assert (today - timedelta(days=7)).isoformat() not in rd
+
+
+def test_progress_accepts_client_today(client):
+    """/api/progress 接收客户端本地自然日 today，以其为锚点驱动 recent_days/streak。"""
+    info = _seed("local", weeks=4)
+    anchor = date(2030, 3, 15)  # 固定一个与服务器当日无关的「客户端今天」
+    db = SessionLocal()
+    try:
+        for d in (anchor, anchor - timedelta(days=1)):
+            db.add(CheckIn(user_id="local", journey_id=info["journey_id"], date=d))
+        db.commit()
+    finally:
+        db.close()
+    j = client.get(f"/api/progress?today={anchor.isoformat()}").json()
+    assert j["recent_days"][-1]["date"] == anchor.isoformat()  # 末位=传入的今天
+    assert j["recent_days"][-1]["checked"] is True
+    assert j["checked_in_today"] is True
+    assert j["current_streak"] == 2
 
 
 def test_passthrough_foo_and_no_header_read_same(client):

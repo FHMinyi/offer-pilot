@@ -28,6 +28,7 @@ import type {
   TaskPatch,
 } from '../types'
 import { deviceHeaders } from '../shared/device'
+import { localTodayIso } from '../shared/journey'
 
 /** 分析请求体（内联模式或引用模式均可） */
 export interface RunAnalysisPayload {
@@ -470,6 +471,8 @@ export async function replanJourney(id: number, payload: ReplanRequest = {}): Pr
 
 /** 进度汇总（实时聚合 Task + 惰性 streak）。 */
 export async function getProgress(journeyId?: number): Promise<ProgressSummary> {
-  const res = await apiFetch(`/api/progress${qs({ journey_id: journeyId })}`)
+  // 传客户端本地自然日，让 streak/checked_in_today/recent_days/current_week 以浏览器「今天」为锚点，
+  // 与打卡 date（本地日）口径一致，避免服务器时区≠用户时区时跨日错位（见 progress.py 注释）。
+  const res = await apiFetch(`/api/progress${qs({ journey_id: journeyId, today: localTodayIso() })}`)
   return handle<ProgressSummary>(res)
 }
