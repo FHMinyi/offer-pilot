@@ -237,3 +237,105 @@ export interface ConversationDetail {
   created_at: string
   updated_at: string
 }
+
+// ===================================================================
+//  里程碑一 · 有状态闭环（任务 / 打卡 / 旅程 / 进度）
+//  snake_case 严格对齐后端 schemas（TaskOut / CheckInOut / JourneyOut / ProgressOut）。
+// ===================================================================
+
+/** 任务四态：todo 待办 / doing 进行中 / done 已完成 / skipped 系统软删 */
+export type TaskStatus = 'todo' | 'doing' | 'done' | 'skipped'
+/** 任务类别：learn 学习 / deliverable 产出 / interview 面试 / review 复盘 */
+export type TaskKind = 'learn' | 'deliverable' | 'interview' | 'review'
+
+/** roadmap 物化出的可勾选任务行 */
+export interface Task {
+  id: number
+  user_id: string
+  journey_id: number | null
+  analysis_run_id: number
+  week: number
+  order_index: number
+  skill_key: string
+  title: string
+  kind: TaskKind
+  weight: number
+  status: TaskStatus
+  done: boolean // 便利冗余字段 =(status==='done')，后端一并返回
+  planned_date: string | null // YYYY-MM-DD
+  done_at: string | null
+  created_at: string
+}
+
+/** PATCH /api/tasks/{id} 请求体 */
+export interface TaskPatch {
+  status?: TaskStatus
+  weight?: number
+  planned_date?: string | null
+}
+
+/** 每日打卡记录 */
+export interface CheckIn {
+  id: number
+  date: string // YYYY-MM-DD（客户端本地自然日）
+  mood: string
+  note: string
+  minutes: number
+  completed_task_ids: number[] // 引用 Task.id
+  created_at: string
+  updated_at: string
+}
+
+/** POST /api/checkins 请求体（upsert，同 date 覆盖） */
+export interface CheckInUpsert {
+  date?: string // 缺省=服务器当日；前端通常传本地自然日
+  mood?: string
+  note?: string
+  minutes?: number
+  completed_task_ids?: number[]
+}
+
+/** 旅程五阶段展示标签：诊断/执行/投递/面试/终局 */
+export type JourneyStage = 'diagnosing' | 'executing' | 'applying' | 'interviewing' | 'closing'
+
+/** 旅程主表（单用户取最新 active 一条） */
+export interface JourneyState {
+  id: number
+  target_role: string
+  analysis_run_id: number | null
+  stage: JourneyStage
+  status: string // active/paused/succeeded/unmet/withdrawn
+  start_date: string | null
+  planned_weeks: number
+  current_week: number
+  created_at: string
+  updated_at: string
+}
+
+/** PATCH /api/journey/{id} 请求体 */
+export interface JourneyPatch {
+  stage?: JourneyStage
+  target_role?: string
+  planned_weeks?: number
+  current_week?: number
+}
+
+/** 单周进度（聚合 Task） */
+export interface WeekProgress {
+  week: number
+  total: number
+  done: number
+}
+
+/** 进度汇总（GET /api/progress 实时聚合 + 惰性 streak） */
+export interface ProgressSummary {
+  total_tasks: number
+  done_tasks: number
+  completion_rate: number // 0~1
+  current_week: number
+  week_progress: WeekProgress[]
+  current_streak: number
+  longest_streak: number
+  last_checkin_date: string | null
+  checked_in_today: boolean
+}

@@ -1861,6 +1861,15 @@ onUnmounted(() => {
             {{ fullReportCtaLabel }}
             <span class="report-panel__cta-arrow" aria-hidden="true">→</span>
           </button>
+
+          <!-- 已出方案：次级入口跳活计划页（可勾选任务 + 每日打卡），不触碰对话内核 -->
+          <RouterLink
+            v-if="hasPlan && currentRunId"
+            class="report-panel__plan-link"
+            :to="`/plan/${currentRunId}`"
+          >
+            📋 开始执行 / 每日打卡
+          </RouterLink>
         </div>
       </aside>
     </div>
@@ -2061,6 +2070,30 @@ onUnmounted(() => {
 .report-panel__cta-arrow {
   font-size: 1em;
   line-height: 1;
+}
+
+/* 次级入口：跳活计划页（开始执行 / 每日打卡） */
+.report-panel__plan-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: var(--space-2);
+  padding: 8px 14px;
+  border: 1px solid var(--brand-soft);
+  border-radius: var(--radius);
+  background: var(--brand-soft);
+  color: var(--brand-active);
+  font-size: 0.86rem;
+  font-weight: 600;
+  transition:
+    border-color var(--transition),
+    color var(--transition);
+}
+
+.report-panel__plan-link:hover {
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 /* ---------- 浮动「回到底部」按钮 ---------- */

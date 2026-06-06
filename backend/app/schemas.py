@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Annotated
+from datetime import date, datetime, timezone
+from datetime import date as DateField  # 别名：供字段名为 date 的模型引用，避免被字段遮蔽
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
@@ -95,6 +96,9 @@ class AnalysisRunRequest(BaseModel):
 
     target_role: str = Field("", description="目标岗位方向，例如“前端实习”")
     weeks: int = Field(4, ge=1, le=12, description="学习路线周数")
+    prefer_structured: bool = Field(
+        True, description="引用模式优先复用 Resume.structured，缺失才回退重解析"
+    )
 
 
 class AnalysisRunOut(BaseModel):
@@ -211,3 +215,101 @@ class AnalysisSummaryOut(BaseModel):
     engine: str
     job_count: int
     created_at: UtcDateTime
+
+
+# ---------------------------------------------------------------------------
+# 里程碑一 · 有状态闭环（任务 / 打卡 / 旅程 / 进度）
+# ---------------------------------------------------------------------------
+
+TaskStatus = Literal["todo", "doing", "done", "skipped"]
+TaskKind = Literal["learn", "deliverable", "interview", "review"]
+# C2 裁决统一：diagnosing/executing/applying/interviewing/closing
+JourneyStage = Literal["diagnosing", "executing", "applying", "interviewing", "closing"]
+
+
+class TaskOut(BaseModel):
+    id: int
+    user_id: str
+    journey_id: int | None = None
+    analysis_run_id: int
+    week: int
+    order_index: int
+    skill_key: str
+    title: str
+    kind: TaskKind
+    weight: int
+    status: TaskStatus
+    done: bool = False  # 便利冗余字段 =(status=='done')，由 Task.done 属性提供
+    planned_date: date | None = None
+    done_at: UtcDateTime | None = None
+    created_at: UtcDateTime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class JourneyOut(BaseModel):
+    id: int
+    target_role: str
+    analysis_run_id: int | None = None
+    stage: JourneyStage
+    status: str
+    start_date: date | None = None
+    planned_weeks: int
+    current_week: int
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WeekProgressItem(BaseModel):
+    week: int
+    total: int
+    done: int
+
+
+class ProgressOut(BaseModel):
+    total_tasks: int
+    done_tasks: int
+    completion_rate: float  # 0~1
+    current_week: int
+    week_progress: list[WeekProgressItem]
+    current_streak: int
+    longest_streak: int
+    last_checkin_date: date | None = None
+    checked_in_today: bool
+
+
+class TaskPatchRequest(BaseModel):
+    status: TaskStatus | None = None
+    weight: int | None = Field(None, ge=0, le=10)  # 里程碑二降权靶点
+    planned_date: date | None = None
+
+
+class CheckInSaveRequest(BaseModel):
+    # 字段名 date 与 datetime.date 同名：用别名 DateField 标注，避免 future-annotations 下遮蔽
+    date: DateField | None = None  # 缺省=服务器当日；前端通常传本地自然日
+    mood: str = ""
+    note: str = Field("", description="一句话总结")
+    minutes: int = Field(0, ge=0, le=1440)
+    completed_task_ids: list[int] = Field(default_factory=list)
+
+
+class CheckInOut(BaseModel):
+    id: int
+    date: DateField
+    mood: str
+    note: str
+    minutes: int
+    completed_task_ids: list[int]
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class JourneyPatchRequest(BaseModel):
+    stage: JourneyStage | None = None
+    target_role: str | None = None
+    planned_weeks: int | None = Field(None, ge=1, le=12)
+    current_week: int | None = Field(None, ge=1, le=12)

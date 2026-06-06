@@ -21,11 +21,25 @@ from sqlalchemy.orm import Session
 
 from ..models import AnalysisRun, JobPosting, Resume
 from . import llm, pipeline, search
+from .journey import ensure_journey
+from .materialize import materialize_tasks
 
 # 工具调用循环上限，防止无限调用
 _MAX_STEPS = 5
 
 Event = tuple[str, dict]  # (事件类型, data)
+
+
+def _materialize_safe(db: Session, run: AnalysisRun, user_id: str) -> None:
+    """物化有状态闭环（ensure_journey + materialize_tasks）旁路调用。
+
+    失败降级「有报告无 Task」，绝不中断 SSE 流（generate_plan 在生成器内 commit）。
+    """
+    try:
+        journey = ensure_journey(db, run, user_id)
+        materialize_tasks(db, run, user_id, journey)
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 TOOLS = [
@@ -175,10 +189,14 @@ def run_turn(
     db: Session,
     reasoning_effort: str = "medium",
     client_time: str = "",
+    user_id: str = "local",
 ) -> Iterator[Event]:
-    """运行一轮对话，产出 SSE 事件流。"""
+    """运行一轮对话，产出 SSE 事件流。
+
+    user_id：归属标签，由路由层 Depends(get_current_user) 解出后显式穿透到物化（§5.3）。
+    """
     if not llm.streaming_supported():
-        yield from _scripted_turn(context, db)
+        yield from _scripted_turn(context, db, user_id)
         return
 
     llm_messages: list[dict] = [{"role": "system", "content": _system_prompt(context, client_time)}]
@@ -244,7 +262,7 @@ def run_turn(
                         continue
                     if t["name"] == "analyze_match":
                         did_analyze = True
-                    yield from _dispatch_tool(t, context, db, llm_messages)
+                    yield from _dispatch_tool(t, context, db, llm_messages, user_id)
                 if stop_turn:
                     # 兜底：若本轮模型没说任何话（仅想直接生成计划），补上反问，避免对话卡住
                     if not spoke:
@@ -292,7 +310,9 @@ def _tool_pending_label(name: str) -> str:
     }.get(name, "正在准备工具调用…")
 
 
-def _dispatch_tool(tool: dict, context: dict, db: Session, llm_messages: list[dict]) -> Iterator[Event]:
+def _dispatch_tool(
+    tool: dict, context: dict, db: Session, llm_messages: list[dict], user_id: str = "local"
+) -> Iterator[Event]:
     name = tool.get("name", "")
     tid = tool.get("id", "")
     try:
@@ -362,7 +382,7 @@ def _dispatch_tool(tool: dict, context: dict, db: Session, llm_messages: list[di
                 outcome = payload
         assert outcome is not None
 
-        run = _persist_run(db, resume_text, jd_texts, outcome, role, weeks)
+        run = _persist_run(db, resume_text, jd_texts, outcome, role, weeks, user_id)
         result = outcome["result"]
         yield ("report", {"analysis_run_id": run.id, "result": result})
         yield ("tool_result", {"id": tid, "name": name, "label": f"匹配度 {result['match_score']}%", "ok": True})
@@ -415,6 +435,9 @@ def _dispatch_tool(tool: dict, context: dict, db: Session, llm_messages: list[di
         db.commit()
         db.refresh(run)
 
+        # 计划生成后把 roadmap 物化为可勾选 Task（旁路、失败降级「有报告无 Task」）
+        _materialize_safe(db, run, user_id)
+
         yield ("report", {"analysis_run_id": run.id, "result": run.result})
         yield ("tool_result", {"id": tid, "name": name, "label": f"已生成 {weeks} 周计划", "ok": True})
         llm_messages.append(
@@ -450,7 +473,13 @@ def _match_summary(result: dict, run_id: int) -> str:
 
 
 def _persist_run(
-    db: Session, resume_text: str, jd_texts: list[str], outcome: dict, role: str, weeks: int
+    db: Session,
+    resume_text: str,
+    jd_texts: list[str],
+    outcome: dict,
+    role: str,
+    weeks: int,
+    user_id: str = "local",
 ) -> AnalysisRun:
     resume_row = Resume(raw_text=resume_text, structured=outcome["resume"], source_type="chat")
     db.add(resume_row)
@@ -480,6 +509,11 @@ def _persist_run(
     db.add(run)
     db.commit()
     db.refresh(run)
+
+    # 物化有状态闭环。analyze_match 阶段 roadmap 为空→仅建 journey、0 Task；
+    # 脚本化降级 / 完整分析 roadmap 非空→同时物化 Task。
+    _materialize_safe(db, run, user_id)
+
     return run
 
 
@@ -488,7 +522,7 @@ def _persist_run(
 # ---------------------------------------------------------------------------
 
 
-def _scripted_turn(context: dict, db: Session) -> Iterator[Event]:
+def _scripted_turn(context: dict, db: Session, user_id: str = "local") -> Iterator[Event]:
     resume_text = context.get("resume_text") or ""
     jd_texts = [t for t in (context.get("jd_texts") or []) if t and t.strip()]
 
@@ -505,7 +539,7 @@ def _scripted_turn(context: dict, db: Session) -> Iterator[Event]:
     role = context.get("target_role", "")
     weeks = int(context.get("weeks") or 4)
     outcome = pipeline.run_analysis(resume_text, jd_texts, role, weeks)
-    run = _persist_run(db, resume_text, jd_texts, outcome, role, weeks)
+    run = _persist_run(db, resume_text, jd_texts, outcome, role, weeks, user_id)
     result = outcome["result"]
     yield ("report", {"analysis_run_id": run.id, "result": result})
     gaps = "、".join(g["name"] for g in result["skill_gap"]["must_have_gaps"][:3]) or "无明显必备缺口"

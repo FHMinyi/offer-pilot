@@ -6,9 +6,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -93,6 +102,119 @@ class SavedJd(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+# ---------------------------------------------------------------------------
+# 里程碑一 · 有状态闭环三表（JourneyState / Task / CheckIn）。
+# day-one 全带 user_id String(64)，与未来真实 id 同形（接缝见 app/deps.py）。
+# 字段口径与 docs/方案_里程碑一_地基层_2026-06-05.md §3.2 一致，并已并入 B 轨决策
+# （B2 profile_type / B3 signals+stage 派生 / B4 多终态 status / B5 persona+tone）。
+# 现有 5 表零改动。
+# ---------------------------------------------------------------------------
+
+
+class JourneyState(Base):
+    """旅程主表：单用户取最新 active 一行（约定，非约束）。"""
+
+    __tablename__ = "journey_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    # B2 预留四类画像键(F3): student/newgrad/switcher/jobhopper
+    profile_type: Mapped[str] = mapped_column(String(16), default="student")
+    analysis_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("analysis_runs.id"), nullable=True, index=True
+    )
+    target_role: Mapped[str] = mapped_column(String(255), default="")
+    # B3 多维并存信号：真值是各独立信号，不再是单值线性 stage。
+    #   M1 多数由 Task/CheckIn 实时派生(进度健康度/中断天数)，少数显式存这里(M3 写)。
+    signals: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 派生展示标签(由 signals 组合算出，非线性真值):
+    #   diagnosing/executing/applying/interviewing/closing
+    stage: Mapped[str] = mapped_column(String(32), default="executing")
+    # B4 多终态(取代原 active/archived): active/paused/succeeded/unmet/withdrawn
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    # B5 单人设+滑块，预留三人设：persona 命名人格、tone 语气强度(鼓励⟷鞭策)
+    persona: Mapped[str] = mapped_column(String(32), default="default")
+    tone: Mapped[int] = mapped_column(Integer, default=50)  # 0=最温柔 … 100=最严格
+    # 自然日(C4)，streak / planned_date 起算
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    planned_weeks: Mapped[int] = mapped_column(Integer, default=4)
+    current_week: Mapped[int] = mapped_column(Integer, default=1)  # 里程碑二靶点
+    last_replanned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # 里程碑二靶点
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    tasks: Mapped[list["Task"]] = relationship(
+        "Task", back_populates="journey", cascade="all, delete-orphan"
+    )
+
+
+class Task(Base):
+    """roadmap 物化为可勾选行——闭环核心 + 物化契约锚点。"""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        # C3 物化幂等业务键：周内跨 kind 连续编号
+        UniqueConstraint("analysis_run_id", "week", "order_index", name="uq_task_run_week_order"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # 稳定主键：CheckIn 引用它
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    journey_id: Mapped[int | None] = mapped_column(
+        ForeignKey("journey_states.id"), nullable=True, index=True
+    )
+    analysis_run_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_runs.id"), nullable=False, index=True
+    )
+    week: Mapped[int] = mapped_column(Integer, default=1)
+    # 该 run 该 week 内跨 kind 连续序(C3)，物化幂等键 + 周内排序
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    skill_key: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(Text, nullable=False)  # 原 roadmap 裸字符串
+    kind: Mapped[str] = mapped_column(String(16), default="learn")  # learn/deliverable/interview/review
+    weight: Mapped[int] = mapped_column(Integer, default=1)  # 里程碑二重排/降权靶点
+    status: Mapped[str] = mapped_column(String(16), default="todo")  # 四态 todo/doing/done/skipped
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    journey: Mapped["JourneyState | None"] = relationship("JourneyState", back_populates="tasks")
+
+    @property
+    def done(self) -> bool:
+        """便利只读字段：完成判定统一 status=='done'（供 TaskOut 序列化，非数据库列）。"""
+        return self.status == "done"
+
+
+class CheckIn(Base):
+    """每日打卡：同 user_id+date 唯一，upsert；引用 Task.id 稳定主键。"""
+
+    __tablename__ = "check_ins"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_checkin_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    journey_id: Mapped[int | None] = mapped_column(
+        ForeignKey("journey_states.id"), nullable=True, index=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True, nullable=False)  # 客户端本地自然日
+    mood: Mapped[str] = mapped_column(String(16), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    minutes: Mapped[int] = mapped_column(Integer, default=0)
+    # list[int]，引用 Task.id（非 week/index），稳定主键回指
+    completed_task_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

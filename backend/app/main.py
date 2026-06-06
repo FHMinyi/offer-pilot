@@ -10,7 +10,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import get_settings
 from .database import init_db
-from .routers import analysis, chat, conversations, jobs, resumes, saved_jds, skills
+from .db_guard import verify_schema
+from .routers import (
+    analysis,
+    chat,
+    checkins,
+    conversations,
+    jobs,
+    journey,
+    progress,
+    resumes,
+    saved_jds,
+    skills,
+    tasks,
+)
 
 settings = get_settings()
 
@@ -19,6 +32,8 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     # 启动时建表（MVP 不引入迁移工具）
     init_db()
+    # schema 守门：对照声明表与实际表，缺失仅告警不阻断（详见 db_guard.py）
+    verify_schema()
     yield
 
 
@@ -55,6 +70,10 @@ app.include_router(skills.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(saved_jds.router)
+app.include_router(tasks.router)
+app.include_router(checkins.router)
+app.include_router(journey.router)
+app.include_router(progress.router)
 
 
 @app.get("/api/health", tags=["meta"])

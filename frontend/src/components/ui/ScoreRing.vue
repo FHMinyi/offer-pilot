@@ -11,10 +11,13 @@ const props = withDefaults(
     size?: number
     /** 环描边粗细（像素），默认 12 */
     stroke?: number
+    /** 中心说明文案，默认「匹配度」（进度看板可传「完成率」） */
+    caption?: string
   }>(),
   {
     size: 132,
     stroke: 12,
+    caption: '匹配度',
   },
 )
 
@@ -61,7 +64,7 @@ const showCaption = computed(() => props.size >= 72)
     class="ring"
     :style="{ width: `${size}px`, height: `${size}px` }"
     role="img"
-    :aria-label="`匹配度 ${clamped} 分，${level}`"
+    :aria-label="`${caption} ${clamped} 分，${level}`"
   >
     <svg
       :width="size"
@@ -97,7 +100,7 @@ const showCaption = computed(() => props.size >= 72)
     <!-- 中心内容 -->
     <div class="ring__label">
       <span class="ring__value" :style="{ color, fontSize: `${valueFontPx}px` }">{{ clamped }}</span>
-      <span v-if="showCaption" class="ring__caption" :style="{ fontSize: `${captionFontPx}px` }">匹配度</span>
+      <span v-if="showCaption" class="ring__caption" :style="{ fontSize: `${captionFontPx}px` }">{{ caption }}</span>
     </div>
   </div>
 </template>

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from ..database import SessionLocal
+from ..deps import get_current_user
 from ..schemas import ChatRequest
 from ..services import agent
 
@@ -23,17 +24,23 @@ def _sse(event: str, data: dict) -> str:
 
 
 @router.post("/stream")
-def chat_stream(payload: ChatRequest) -> StreamingResponse:
+def chat_stream(
+    payload: ChatRequest,
+    user_id: str = Depends(get_current_user),
+) -> StreamingResponse:
     messages = [m.model_dump() for m in payload.messages]
     context = payload.context.model_dump()
     reasoning_effort = payload.reasoning_effort
     client_time = payload.client_time
 
     def event_gen():
-        # 在生成器内创建会话，保证整个流式过程中会话有效
+        # 在生成器内创建会话，保证整个流式过程中会话有效；
+        # user_id 在路由层依赖解出后显式穿透（chat.py 生成器脱离请求依赖，§5.3）
         db = SessionLocal()
         try:
-            for event, data in agent.run_turn(messages, context, db, reasoning_effort, client_time):
+            for event, data in agent.run_turn(
+                messages, context, db, reasoning_effort, client_time, user_id=user_id
+            ):
                 yield _sse(event, data)
         except Exception as exc:  # noqa: BLE001 兜底，避免流中断后前端无提示
             yield _sse("error", {"message": str(exc)})

@@ -19,8 +19,11 @@ def run_analysis(
     jd_texts: list[str],
     target_role: str = "",
     weeks: int = 4,
+    resume_structured: dict | None = None,
 ) -> dict:
     """执行一次完整分析，返回中间产物与最终结果（阻塞式，内部复用流式实现）。
+
+    resume_structured：可选已有结构化简历（如 Resume.structured），非空则跳过简历重解析。
 
     返回：
     {
@@ -31,24 +34,35 @@ def run_analysis(
     }
     """
     outcome: dict | None = None
-    for kind, payload in run_analysis_streaming(resume_text, jd_texts, target_role, weeks):
+    for kind, payload in run_analysis_streaming(
+        resume_text, jd_texts, target_role, weeks, resume_structured=resume_structured
+    ):
         if kind == "result":
             outcome = payload
     assert outcome is not None
     return outcome
 
 
-def _parse_inputs_streaming(resume_text: str, jd_texts: list[str]) -> Iterator[tuple[str, object]]:
+def _parse_inputs_streaming(
+    resume_text: str,
+    jd_texts: list[str],
+    resume_structured: dict | None = None,
+) -> Iterator[tuple[str, object]]:
     """并发解析简历与各 JD（多路 LLM 调用并行），按完成进度产出 status。
 
+    resume_structured 非空时**跳过简历重解析**直接复用（省 LLM 成本，里程碑一接缝）。
     最后产出 ("parsed", (resume, parsed_jds))。
     LLM 模式下解析是耗时大头，线程池并发可显著缩短总时长。
     """
     n = len(jd_texts)
-    yield ("status", (f"正在并行解析简历与 {n} 条 JD…" if n else "正在解析简历…"))
+    reuse_resume = bool(resume_structured)
+    if reuse_resume:
+        yield ("status", (f"复用已有简历结构，正在解析 {n} 条 JD…" if n else "复用已有简历结构…"))
+    else:
+        yield ("status", (f"正在并行解析简历与 {n} 条 JD…" if n else "正在解析简历…"))
 
     with cf.ThreadPoolExecutor(max_workers=min(6, 1 + n)) as ex:
-        resume_future = ex.submit(resume_parser.parse_resume, resume_text)
+        resume_future = None if reuse_resume else ex.submit(resume_parser.parse_resume, resume_text)
         jd_futures = {ex.submit(jd_parser.parse_jd, t): i for i, t in enumerate(jd_texts)}
         parsed_jds: list[dict] = [None] * n  # type: ignore[list-item]
         done = 0
@@ -59,7 +73,7 @@ def _parse_inputs_streaming(resume_text: str, jd_texts: list[str]) -> Iterator[t
             done += 1
             # 每条 JD 解析完成时，附带其标题与抽取到的必备/加分技能，便于前端展示逐条分析过程
             yield ("status", f"已解析 {done}/{n} · {_jd_brief(jd)}")
-        resume = resume_future.result()
+        resume = resume_structured if reuse_resume else resume_future.result()
 
     # 简历解析完成后也给出识别到的技能，作为过程的一部分
     rskills = "、".join(s["name"] for s in resume.get("skills", [])[:6]) or "—"
@@ -80,16 +94,18 @@ def analyze_match_streaming(
     resume_text: str,
     jd_texts: list[str],
     target_role: str = "",
+    resume_structured: dict | None = None,
 ) -> Iterator[tuple[str, object]]:
     """第一阶段：匹配度 + 岗位画像 + 技能缺口 + 简历优化建议（不含学习路线）。
 
+    resume_structured 非空则复用、跳过简历重解析。
     产出 ("status", str) 进度，最后 ("result", outcome)，其中 outcome["result"]["roadmap"] 为空。
     """
     jd_texts = [t for t in (jd_texts or []) if t and t.strip()]
 
     resume: dict = {}
     parsed_jds: list[dict] = []
-    for kind, payload in _parse_inputs_streaming(resume_text, jd_texts):
+    for kind, payload in _parse_inputs_streaming(resume_text, jd_texts, resume_structured):
         if kind == "status":
             yield ("status", payload)
         elif kind == "parsed":
@@ -137,13 +153,17 @@ def run_analysis_streaming(
     jd_texts: list[str],
     target_role: str = "",
     weeks: int = 4,
+    resume_structured: dict | None = None,
 ) -> Iterator[tuple[str, object]]:
     """完整分析（匹配 + 学习路线一次产出）。供脚本降级与既有接口复用。
 
+    resume_structured 非空则复用、跳过简历重解析。
     逐步 yield ("status", str)，最后一次 ("result", outcome)。
     """
     outcome: dict | None = None
-    for kind, payload in analyze_match_streaming(resume_text, jd_texts, target_role):
+    for kind, payload in analyze_match_streaming(
+        resume_text, jd_texts, target_role, resume_structured=resume_structured
+    ):
         if kind == "status":
             yield ("status", payload)
         elif kind == "result":

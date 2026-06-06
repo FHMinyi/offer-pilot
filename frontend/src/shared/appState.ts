@@ -6,6 +6,7 @@
 //   · 折叠态需在多视图间共享并持久化。
 
 import { reactive, ref } from 'vue'
+import type { ProgressSummary } from '../types'
 
 const COLLAPSE_KEY = 'op.sidebar.collapsed'
 
@@ -101,3 +102,21 @@ export const openReportSignal = ref(0)
 export function requestOpenReport(): void {
   openReportSignal.value++
 }
+
+// —— 进度闭环跨组件协同（里程碑一）——
+// 勾选任务 / 每日打卡成功后通知进度看板与侧栏 streak 角标惰性重拉，避免各自轮询。
+
+/** 「进度已变更」信号：勾选/打卡成功后 +1；看板、侧栏 watch 后重拉。 */
+export const progressChanged = ref(0)
+export function notifyProgressChanged(): void {
+  progressChanged.value++
+}
+
+/**
+ * 进度缓存（SideNav streak 角标与 Dashboard 共享，避免重复请求）。
+ * loadedAt 为时间戳（毫秒），用于判断是否需要刷新。
+ */
+export const progressCache = reactive<{ value: ProgressSummary | null; loadedAt: number }>({
+  value: null,
+  loadedAt: 0,
+})

@@ -9,15 +9,23 @@ import type {
   ChatContext,
   ChatMessage,
   ChatPersistContext,
+  CheckIn,
+  CheckInUpsert,
   ConversationDetail,
   ConversationSummary,
+  JourneyPatch,
+  JourneyState,
   PersistedTurn,
+  ProgressSummary,
   ReasoningEffort,
   ResumeOut,
   SavedJd,
   SearchResultItem,
   SkillGraph,
+  Task,
+  TaskPatch,
 } from '../types'
+import { deviceHeaders } from '../shared/device'
 
 /** 分析请求体（内联模式或引用模式均可） */
 export interface RunAnalysisPayload {
@@ -27,6 +35,30 @@ export interface RunAnalysisPayload {
   job_ids?: number[]
   target_role?: string
   weeks?: number
+  prefer_structured?: boolean
+}
+
+/**
+ * 统一 fetch 包装：把设备归属头（X-Device-Id）合并进所有 /api 请求。
+ * 不覆盖调用方已设的同名头；不注入 Content-Type（保 FormData 由浏览器自带边界）。
+ * 所有 /api 调用（含 streamChat 的 SSE、uploadResume 的 FormData）一律走它。
+ */
+function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers || {})
+  for (const [k, v] of Object.entries(deviceHeaders())) {
+    if (!headers.has(k)) headers.set(k, v)
+  }
+  return fetch(input, { ...init, headers })
+}
+
+/** 把可选查询参数对象拼成 `?a=1&b=2`（忽略 undefined/null/空串）。 */
+function qs(params: Record<string, string | number | null | undefined>): string {
+  const sp = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+  }
+  const s = sp.toString()
+  return s ? `?${s}` : ''
 }
 
 /**
@@ -82,7 +114,7 @@ async function handle<T>(res: Response): Promise<T> {
 export async function uploadResume(file: File): Promise<ResumeOut> {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch('/api/resumes/upload', {
+  const res = await apiFetch('/api/resumes/upload', {
     method: 'POST',
     body: form,
   })
@@ -95,7 +127,7 @@ export async function uploadResume(file: File): Promise<ResumeOut> {
  * 引用模式传 { resume_id, job_ids, ... }。
  */
 export async function runAnalysis(payload: RunAnalysisPayload): Promise<AnalysisRun> {
-  const res = await fetch('/api/analysis/run', {
+  const res = await apiFetch('/api/analysis/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -105,19 +137,19 @@ export async function runAnalysis(payload: RunAnalysisPayload): Promise<Analysis
 
 /** 获取历史分析列表（按时间倒序） */
 export async function listAnalyses(): Promise<AnalysisSummary[]> {
-  const res = await fetch('/api/analysis')
+  const res = await apiFetch('/api/analysis')
   return handle<AnalysisSummary[]>(res)
 }
 
 /** 获取单次分析的完整记录 */
 export async function getAnalysis(id: number): Promise<AnalysisRun> {
-  const res = await fetch(`/api/analysis/${id}`)
+  const res = await apiFetch(`/api/analysis/${id}`)
   return handle<AnalysisRun>(res)
 }
 
 /** 获取技能本体图谱 */
 export async function getSkillGraph(): Promise<SkillGraph> {
-  const res = await fetch('/api/skills/graph')
+  const res = await apiFetch('/api/skills/graph')
   return handle<SkillGraph>(res)
 }
 
@@ -127,13 +159,13 @@ export async function getSkillGraph(): Promise<SkillGraph> {
 
 /** 获取已保存的 JD 列表（按 updated_at 倒序） */
 export async function listSavedJds(): Promise<SavedJd[]> {
-  const res = await fetch('/api/saved-jds')
+  const res = await apiFetch('/api/saved-jds')
   return handle<SavedJd[]>(res)
 }
 
 /** 新建一条已保存 JD */
 export async function createSavedJd(p: { title: string; content: string }): Promise<SavedJd> {
-  const res = await fetch('/api/saved-jds', {
+  const res = await apiFetch('/api/saved-jds', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(p),
@@ -146,7 +178,7 @@ export async function updateSavedJd(
   id: number,
   p: { title: string; content: string },
 ): Promise<SavedJd> {
-  const res = await fetch(`/api/saved-jds/${id}`, {
+  const res = await apiFetch(`/api/saved-jds/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(p),
@@ -156,7 +188,7 @@ export async function updateSavedJd(
 
 /** 删除指定 id 的已保存 JD */
 export async function deleteSavedJd(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`/api/saved-jds/${id}`, { method: 'DELETE' })
+  const res = await apiFetch(`/api/saved-jds/${id}`, { method: 'DELETE' })
   return handle<{ ok: boolean }>(res)
 }
 
@@ -177,7 +209,7 @@ export async function saveConversation(payload: {
   turns: PersistedTurn[]
   context?: ChatPersistContext
 }): Promise<{ id: number; title: string; created_at: string; updated_at: string }> {
-  const res = await fetch('/api/conversations', {
+  const res = await apiFetch('/api/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -187,13 +219,13 @@ export async function saveConversation(payload: {
 
 /** 获取会话列表（按更新时间倒序） */
 export async function listConversations(): Promise<ConversationSummary[]> {
-  const res = await fetch('/api/conversations')
+  const res = await apiFetch('/api/conversations')
   return handle<ConversationSummary[]>(res)
 }
 
 /** 获取单个会话的完整记录（含全部回合） */
 export async function getConversation(id: number): Promise<ConversationDetail> {
-  const res = await fetch(`/api/conversations/${id}`)
+  const res = await apiFetch(`/api/conversations/${id}`)
   return handle<ConversationDetail>(res)
 }
 
@@ -321,7 +353,7 @@ export async function streamChat(
   }
 
   try {
-    const res = await fetch('/api/chat/stream', {
+    const res = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -365,4 +397,67 @@ export async function streamChat(
     const message = err instanceof Error ? err.message : '对话流连接失败'
     handlers.onError?.({ message })
   }
+}
+
+// ===================================================================
+//  里程碑一 · 有状态闭环（任务 / 打卡 / 旅程 / 进度）
+// ===================================================================
+
+/** 任务列表（按 week, order_index 升序）；可按 run / journey / week 过滤。 */
+export async function listTasks(params: {
+  analysis_run_id?: number
+  journey_id?: number
+  week?: number
+} = {}): Promise<Task[]> {
+  const res = await apiFetch(`/api/tasks${qs(params)}`)
+  return handle<Task[]>(res)
+}
+
+/** 更新单个任务（status=done 写完成时间；可改 weight/planned_date）。 */
+export async function patchTask(id: number, patch: TaskPatch): Promise<Task> {
+  const res = await apiFetch(`/api/tasks/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return handle<Task>(res)
+}
+
+/** 打卡列表（按 date 倒序）；可选 start/end 闭区间过滤（YYYY-MM-DD）。 */
+export async function listCheckIns(range: { start?: string; end?: string } = {}): Promise<CheckIn[]> {
+  const res = await apiFetch(`/api/checkins${qs(range)}`)
+  return handle<CheckIn[]>(res)
+}
+
+/** 当日打卡 upsert（同 date 覆盖）。 */
+export async function upsertCheckIn(payload: CheckInUpsert): Promise<CheckIn> {
+  const res = await apiFetch('/api/checkins', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return handle<CheckIn>(res)
+}
+
+/** 取最新 active 旅程；无（404）则返回 null（空态由调用方引导）。 */
+export async function getJourney(): Promise<JourneyState | null> {
+  const res = await apiFetch('/api/journey')
+  if (res.status === 404) return null
+  return handle<JourneyState>(res)
+}
+
+/** 更新旅程（推进 stage / 改 target_role / 周数）。 */
+export async function patchJourney(id: number, patch: JourneyPatch): Promise<JourneyState> {
+  const res = await apiFetch(`/api/journey/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return handle<JourneyState>(res)
+}
+
+/** 进度汇总（实时聚合 Task + 惰性 streak）。 */
+export async function getProgress(journeyId?: number): Promise<ProgressSummary> {
+  const res = await apiFetch(`/api/progress${qs({ journey_id: journeyId })}`)
+  return handle<ProgressSummary>(res)
 }

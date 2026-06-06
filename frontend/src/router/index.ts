@@ -28,6 +28,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/ConversationView.vue'),
     props: true, // 将路由参数 id 作为 prop 传入视图
   },
+  {
+    // 活计划页：某次分析物化出的可勾选任务 + 今日打卡（里程碑一闭环）
+    path: '/plan/:runId',
+    name: 'plan',
+    component: () => import('../views/PlanView.vue'),
+    props: true, // runId = analysis_run_id
+  },
+  {
+    // 进度看板：完成度 / streak / 周进度 / 阶段
+    path: '/dashboard',
+    name: 'dashboard',
+    component: () => import('../views/DashboardView.vue'),
+  },
 ]
 
 const router = createRouter({

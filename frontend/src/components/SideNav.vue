@@ -11,7 +11,7 @@
 //   · 监听 conversationsChanged：ChatView 保存会话后自动刷新本列表。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { listConversations } from '../api/client'
+import { getProgress, listConversations } from '../api/client'
 import type { ConversationSummary } from '../types'
 import {
   sidebarState,
@@ -22,6 +22,8 @@ import {
   conversationsChanged,
   reportNav,
   requestOpenReport,
+  progressCache,
+  progressChanged,
 } from '../shared/appState'
 
 const route = useRoute()
@@ -88,6 +90,28 @@ function goHome(): void {
 // 跳转历史记录全量页。
 function goHistory(): void {
   if (route.name !== 'history') void router.push({ name: 'history' })
+  closeMobileSidebar()
+}
+
+// 「我的进度」入口 + 🔥streak 角标（取自共享缓存，避免重复请求）。
+const streak = computed(() => progressCache.value?.current_streak ?? 0)
+
+async function loadProgress(): Promise<void> {
+  try {
+    const p = await getProgress()
+    progressCache.value = p
+    progressCache.loadedAt = Date.now()
+  } catch {
+    // 侧栏角标加载失败不打扰用户
+  }
+}
+onMounted(loadProgress)
+// 勾选/打卡后（progressChanged +1）刷新角标
+watch(progressChanged, loadProgress)
+
+// 跳转进度看板。
+function goDashboard(): void {
+  if (route.name !== 'dashboard') void router.push({ name: 'dashboard' })
   closeMobileSidebar()
 }
 
@@ -181,8 +205,32 @@ function openReport(): void {
       <span aria-hidden="true">🕘</span>
     </button>
 
-    <!-- 底部：历史记录全量入口 + 版本信息 -->
+    <!-- 底部：我的进度 + 历史记录全量入口 + 版本信息 -->
     <div class="sidenav__foot">
+      <button
+        v-if="!effectiveCollapsed"
+        type="button"
+        class="foot-link"
+        :class="{ 'foot-link--active': route.name === 'dashboard' }"
+        title="查看完成度与坚持天数"
+        @click="goDashboard"
+      >
+        <span class="foot-link__icon" aria-hidden="true">📈</span>
+        我的进度
+        <span v-if="streak > 0" class="streak-badge" :title="`已连续打卡 ${streak} 天`">
+          🔥{{ streak }}
+        </span>
+      </button>
+      <button
+        v-else
+        type="button"
+        class="rail-btn rail-btn--foot"
+        title="我的进度"
+        aria-label="我的进度"
+        @click="goDashboard"
+      >
+        <span aria-hidden="true">📈</span>
+      </button>
       <button
         v-if="!effectiveCollapsed"
         type="button"
@@ -544,6 +592,23 @@ function openReport(): void {
 
 .foot-link__icon {
   font-size: 0.9em;
+}
+
+/* 🔥 连续打卡角标 */
+.streak-badge {
+  margin-left: auto;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 折叠态底部的进度图标按钮（高度收敛，不抢占会话列表空间） */
+.rail-btn--foot {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding-top: 0;
+  align-items: center;
 }
 
 .sidenav__ver {

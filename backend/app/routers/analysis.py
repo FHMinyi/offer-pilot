@@ -7,15 +7,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_current_user
 from ..models import AnalysisRun, JobPosting, Resume
 from ..schemas import AnalysisRunOut, AnalysisRunRequest, AnalysisSummaryOut
 from ..services import pipeline
+from ..services.journey import ensure_journey
+from ..services.materialize import materialize_tasks
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 
 @router.post("/run", response_model=AnalysisRunOut)
-def run_analysis(payload: AnalysisRunRequest, db: Session = Depends(get_db)) -> AnalysisRun:
+def run_analysis(
+    payload: AnalysisRunRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+) -> AnalysisRun:
     """运行一次完整分析并保存结果。
 
     支持内联模式（resume_text + jd_texts）与引用模式（resume_id + job_ids）。
@@ -28,11 +35,19 @@ def run_analysis(payload: AnalysisRunRequest, db: Session = Depends(get_db)) -> 
     if not jd_texts:
         raise HTTPException(status_code=400, detail="缺少 JD：请提供 jd_texts 或有效的 job_ids。")
 
+    # 引用模式复用已有 Resume.structured，跳过简历重解析（缺失或关闭则回退）
+    resume_structured = (
+        resume_row.structured
+        if (payload.prefer_structured and resume_row is not None and resume_row.structured)
+        else None
+    )
+
     outcome = pipeline.run_analysis(
         resume_text=resume_text,
         jd_texts=jd_texts,
         target_role=payload.target_role,
         weeks=payload.weeks,
+        resume_structured=resume_structured,
     )
 
     # 内联模式下新建 Resume / JobPosting 行，复用 pipeline 已解析的结构化结果
@@ -69,6 +84,14 @@ def run_analysis(payload: AnalysisRunRequest, db: Session = Depends(get_db)) -> 
     db.add(run)
     db.commit()
     db.refresh(run)
+
+    # 物化有状态闭环（旁路、失败降级「有报告无 Task」，不影响报告返回）
+    try:
+        journey = ensure_journey(db, run, user_id)
+        materialize_tasks(db, run, user_id, journey)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+
     return run
 
 
