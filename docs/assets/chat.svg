@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="流式对话式分析 截图占位">
+  <rect width="1200" height="675" fill="#f6f7f9"/>
+  <rect x="0" y="0" width="1200" height="72" fill="#2563eb"/>
+  <rect x="28" y="20" width="32" height="32" rx="8" fill="#ffffff"/>
+  <text x="44" y="43" font-family="system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="800" fill="#2563eb" text-anchor="middle">OP</text>
+  <text x="76" y="45" font-family="system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#ffffff">OfferPilot</text>
+  <text x="600" y="310" font-family="system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="44" font-weight="750" fill="#1f2937" text-anchor="middle">流式对话式分析</text>
+  <text x="600" y="364" font-family="system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" fill="#4b5563" text-anchor="middle">SSE 边做边出：联网检索 · 技能缺口 · 简历优化 · 分周路线</text>
+  <text x="600" y="624" font-family="system-ui, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="18" fill="#9aa3af" text-anchor="middle">截图占位 · 录制后替换为 chat.png</text>
+</svg>
