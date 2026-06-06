@@ -132,6 +132,9 @@ class ChatContextIn(BaseModel):
     weeks: int = Field(4, ge=1, le=12)
     # 最近一次匹配分析的 id（前端收到 report 后回传），用于第二步 generate_plan 跨轮定位
     analysis_run_id: int | None = None
+    # E3 人设引擎（B5）：语气强度 0=最温柔…100=最严格；persona 预留三人设键
+    tone: int = Field(50, ge=0, le=100, description="语气强度 0=最温柔…100=最严格")
+    persona: str = Field("default", description="人设键（B5 预留 coach/senior/butler）")
 
 
 class ChatRequest(BaseModel):

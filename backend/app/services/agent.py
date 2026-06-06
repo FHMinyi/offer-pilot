@@ -126,6 +126,39 @@ TOOLS = [
 ]
 
 
+# 人设注册表（B5：单人设 + 语气滑块，预留三人设结构）。
+# E3 仅启用 default；coach/senior/butler 作为预留键，后续接入命名人格时再填措辞。
+PERSONAS: dict[str, str] = {
+    "default": "OfferPilot 的 AI 求职规划助手",
+    # 预留（B5/里程碑二后续）：
+    # "coach": "用户的私人求职教练",
+    # "senior": "带用户的学长 / 学姐",
+    # "butler": "用户的求职管家",
+}
+
+
+def _tone_directive(tone: int) -> str:
+    """把语气强度 0..100 映射为系统提示里的「语气」指令（E3：理智脑不变、情感脑可调）。
+
+    无论松紧都守住底线：基于事实、不编造、不报具体 Offer 概率（B7）。
+    """
+    t = max(0, min(100, int(tone)))
+    if t <= 20:
+        style = "语气非常温柔、充满鼓励与共情：先共情再建议，多肯定进步、淡化措辞尖锐感，像贴心的伙伴陪着用户。"
+    elif t <= 40:
+        style = "语气偏鼓励、温和：以正向激励为主，指出不足时也尽量委婉。"
+    elif t <= 60:
+        style = "语气平衡：既肯定做得好的，也直言关键差距，给中肯、可执行的建议。"
+    elif t <= 80:
+        style = "语气偏严格、直接：坦诚指出差距与风险，标准更高，少铺垫多干货，像认真的教练。"
+    else:
+        style = "语气严格、不留情面：直接点破短板与风险、明确说出可能投不上的代价，高标准督促，像严厉的教练鞭策用户。"
+    return (
+        f"【语气强度 {t}/100】{style} "
+        "无论语气松紧，都必须基于事实、不编造、不夸大；可给趋势与相对进展，但不报具体的「Offer 概率」数字。"
+    )
+
+
 def _now_str(client_time: str) -> str:
     """优先用前端传入的本地时间，否则回退服务器时间。"""
     if client_time and client_time.strip():
@@ -141,6 +174,10 @@ def _system_prompt(context: dict, client_time: str = "") -> str:
     role = context.get("target_role") or "（未指定，可询问用户）"
     weeks = context.get("weeks") or 4
     now = _now_str(client_time)
+    # E3 人设引擎：单人设 + 语气滑块（理智脑/流程不变，仅调情感脑措辞）
+    persona = context.get("persona") or "default"
+    persona_desc = PERSONAS.get(persona, PERSONAS["default"])
+    tone_directive = _tone_directive(context.get("tone", 50))
 
     # 把已附材料的实际内容给模型，避免它以为“看不到内容”而反复索取（截断防止过长）
     material: list[str] = []
@@ -157,7 +194,7 @@ def _system_prompt(context: dict, client_time: str = "") -> str:
         material.append("【JD】用户尚未提供，请向其索取至少一条目标岗位 JD。")
 
     return (
-        "你是 OfferPilot 的 AI 求职规划助手，面向应届生和实习求职者。"
+        f"你是 {persona_desc}，面向应届生和实习求职者。"
         "你的目标是围绕目标岗位，把简历、JD 与学习/面试准备串成可执行闭环。\n\n"
         "工作方式（务必按此两步走）：\n"
         "1. 缺简历或 JD 时简洁索取；用户在对话里直接粘贴的简历/JD（而非附件），调用工具时原样填入 resume_text / jd_texts。\n"
@@ -176,7 +213,8 @@ def _system_prompt(context: dict, client_time: str = "") -> str:
         "（analysis_run_id 可省略，系统会用最近一次匹配分析；并传 weekly_hours / timeline_weeks / focus_skills / "
         "learning_style / weeks 等用户已给的偏好）生成个性化学习路线，随后简要说明计划思路与本周重点。"
         "不要为生成计划而重复调用 analyze_match。\n\n"
-        "风格：中文、简洁、具体、不说空话。\n\n"
+        "风格：中文、简洁、具体、不说空话。\n"
+        f"{tone_directive}\n\n"
         f"当前时间：{now}。涉及“当前/最新/今年”等信息时以此为准；"
         "联网检索时请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时的年份。\n\n"
         f"目标岗位：{role}；学习路线周数：{weeks}。\n\n" + "\n\n".join(material)

@@ -144,6 +144,8 @@ export interface ChatContext {
   target_role?: string
   weeks?: number // 1~12，默认 4
   analysis_run_id?: number | null // 最近一次匹配分析 id，用于第二步生成学习计划跨轮定位
+  tone?: number // E3 语气强度 0=最温柔…100=最严格（默认 50）
+  persona?: string // E3 人设键（B5 预留三人设，默认 'default'）
 }
 
 /** 工具调用活动：用于在对话界面展示 Agent 的工具调用过程 */
@@ -217,6 +219,8 @@ export interface ChatPersistContext {
   target_role?: string
   weeks?: number // 1~12，默认 4
   analysis_run_id?: number | null // 最近一次匹配分析 id
+  tone?: number // E3 语气强度（续聊恢复）
+  persona?: string // E3 人设键
 }
 
 /** 会话列表项（精简，按更新时间倒序） */

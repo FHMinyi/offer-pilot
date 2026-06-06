@@ -138,6 +138,47 @@ const effortTip =
   '不支持的模型本项无效，也不影响正常对话。' +
   '在多数 OpenAI 协议模型上“极高/最高”等同“高”。'
 
+// E3 人设引擎（B5：单人设 + 语气滑块）：语气强度 0=最温柔…100=最严格，随对话以 context.tone 提交。
+const TONE_KEY = 'op.tone'
+function readTone(): number {
+  try {
+    const v = Number(localStorage.getItem(TONE_KEY))
+    return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 50
+  } catch {
+    return 50
+  }
+}
+const tone = ref<number>(readTone())
+watch(tone, (v) => {
+  try {
+    localStorage.setItem(TONE_KEY, String(v))
+  } catch {
+    /* 隐私模式：忽略持久化失败 */
+  }
+})
+const toneLabel = computed(() => {
+  const t = tone.value
+  if (t <= 20) return '最温柔'
+  if (t <= 40) return '偏鼓励'
+  if (t <= 60) return '平衡'
+  if (t <= 80) return '偏严格'
+  return '最严格'
+})
+const toneTip =
+  '语气滑块（仅调 AI 措辞，不改分析逻辑）：左=温柔鼓励、多共情；右=严格鞭策、坦诚指出差距。' +
+  '无论松紧都基于事实、不报具体 Offer 概率。可用鼠标滚轮或聚焦后方向键调节。'
+
+const TONE_STEP = 10
+function clampTone(v: number): number {
+  return Math.max(0, Math.min(100, v))
+}
+// 鼠标滚轮调节语气：上滚=更严格(+)，下滚=更温柔(−)。流式中不拦截，留作正常页面滚动。
+function onToneWheel(e: WheelEvent): void {
+  if (streaming.value) return
+  e.preventDefault()
+  tone.value = clampTone(tone.value + (e.deltaY < 0 ? TONE_STEP : -TONE_STEP))
+}
+
 // 高层阶段提示（onStatus 的兜底）——显示在输入区上方的细条。
 // 注意：run_analysis 运行期间的子步骤优先写入对应 tool 块的 status；
 // 仅在找不到进行中的工具块时，才退化为这里的顶部细条。
@@ -597,6 +638,7 @@ function snapshotContext(): ChatContext {
   if (currentRunId.value != null) {
     ctx.analysis_run_id = currentRunId.value
   }
+  ctx.tone = tone.value // E3：随对话提交语气强度
   return ctx
 }
 
@@ -616,6 +658,7 @@ function snapshotPersistContext(): ChatPersistContext {
   if (currentRunId.value != null) {
     ctx.analysis_run_id = currentRunId.value
   }
+  ctx.tone = tone.value // E3：语气强度随会话存盘，续聊恢复
   return ctx
 }
 
@@ -932,6 +975,10 @@ async function loadConversation(id: number): Promise<void> {
     context.jd_texts = Array.isArray(ctx.jd_texts) ? [...ctx.jd_texts] : []
     context.target_role = ctx.target_role ?? ''
     context.weeks = ctx.weeks ?? 4
+    // E3：恢复该会话存盘的语气强度（无则保持当前/默认）
+    if (typeof ctx.tone === 'number' && ctx.tone >= 0 && ctx.tone <= 100) {
+      tone.value = ctx.tone
+    }
     // 绑定到同一会话，后续轮次保存回此 id
     conversationId.value = detail.id
     // 恢复最近一次匹配分析 id：优先取 turns 中最后一个 report 块，
@@ -1768,6 +1815,24 @@ onUnmounted(() => {
               </option>
             </select>
             <span class="effort__info" :title="effortTip" aria-hidden="true">ⓘ</span>
+          </label>
+
+          <!-- E3 语气滑块：仅调 AI 措辞（鼓励⟷鞭策），随对话以 context.tone 提交。
+               桌面端支持鼠标滚轮（@wheel）与方向键（原生 range 聚焦后即可）。 -->
+          <label class="tone" :title="toneTip" @wheel="onToneWheel">
+            <span class="tone__icon" aria-hidden="true">🎚️</span>
+            <span class="tone__label">语气</span>
+            <input
+              v-model.number="tone"
+              class="tone__range"
+              type="range"
+              min="0"
+              max="100"
+              step="10"
+              :disabled="streaming"
+              :aria-label="`语气强度 ${tone}/100（${toneLabel}）`"
+            />
+            <span class="tone__value">{{ toneLabel }}</span>
           </label>
         </div>
       </div>
@@ -3102,6 +3167,45 @@ onUnmounted(() => {
 
 .effort__info:hover {
   color: var(--text-secondary);
+}
+
+/* ---------- E3 语气滑块 ---------- */
+.tone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 550;
+}
+
+.tone:hover {
+  background: var(--surface-muted);
+}
+
+.tone__icon {
+  font-size: 0.9em;
+}
+
+.tone__range {
+  width: 84px;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+.tone__range:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.tone__value {
+  min-width: 2.6em;
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* ---------- 输入框（盒内无边框，焦点环由 .composer__box 承载） ---------- */
