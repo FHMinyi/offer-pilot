@@ -20,6 +20,8 @@ import {
   closeMobileSidebar,
   requestNewChat,
   conversationsChanged,
+  reportNav,
+  requestOpenReport,
 } from '../shared/appState'
 
 const route = useRoute()
@@ -88,6 +90,13 @@ function goHistory(): void {
   if (route.name !== 'history') void router.push({ name: 'history' })
   closeMobileSidebar()
 }
+
+// 「报告 / 学习方案」入口（取代原 ChatView 右下角悬浮角标）：
+// 通过共享信号让 ChatView 展开并滚动高亮报告面板。仅在对话页且已有报告时显示。
+function openReport(): void {
+  requestOpenReport()
+  closeMobileSidebar()
+}
 </script>
 
 <template>
@@ -122,6 +131,22 @@ function goHistory(): void {
     >
       <span class="new-chat__icon" aria-hidden="true">＋</span>
       <span v-if="!effectiveCollapsed" class="new-chat__text">新对话</span>
+    </button>
+
+    <!-- 当前对话的「报告 / 学习方案」入口：仅在对话页且已生成报告时显示。
+         点击展开右侧报告面板并滚动高亮（取代原右下角悬浮角标，统一到左侧栏）。 -->
+    <button
+      v-if="onChat && reportNav.available"
+      type="button"
+      class="report-link"
+      :class="{ 'report-link--active': reportNav.open }"
+      :title="reportNav.hasPlan ? '查看本次学习方案' : '查看本次匹配分析'"
+      @click="openReport"
+    >
+      <span class="report-link__icon" aria-hidden="true">{{ reportNav.hasPlan ? '🎓' : '📊' }}</span>
+      <span v-if="!effectiveCollapsed" class="report-link__text">
+        {{ reportNav.hasPlan ? '学习方案' : '匹配分析' }}
+      </span>
     </button>
 
     <!-- 最近会话列表（折叠态隐藏，展开态滚动） -->
@@ -316,6 +341,64 @@ function goHistory(): void {
   font-size: 1.05rem;
   font-weight: 700;
   line-height: 1;
+}
+
+/* ---------- 报告 / 学习方案入口 ---------- */
+.report-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--brand-soft);
+  border-radius: var(--radius);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--transition),
+    border-color var(--transition),
+    color var(--transition);
+}
+
+.report-link:hover {
+  border-color: var(--brand);
+  color: var(--brand-active);
+}
+
+/* 面板已展开时弱化为「当前所在」态，避免与展开操作产生歧义 */
+.report-link--active {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.report-link--active:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.sidenav--collapsed .report-link {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.report-link__icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.report-link__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- 最近会话 ---------- */

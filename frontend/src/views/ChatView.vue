@@ -25,7 +25,7 @@
 //   工具 / 思考 / 报告不回传后端。
 //
 // SSE 各回调只负责「更新某条助手消息的响应式对象」，与模板渲染解耦（见 runChat）。
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   createSavedJd,
@@ -48,7 +48,13 @@ import type {
 import JdLibrary from '../components/JdLibrary.vue'
 import MarkdownText from '../components/MarkdownText.vue'
 import ScoreRing from '../components/ui/ScoreRing.vue'
-import { newChatSignal, notifyConversationsChanged } from '../shared/appState'
+import {
+  newChatSignal,
+  notifyConversationsChanged,
+  reportNav,
+  openReportSignal,
+  isWide,
+} from '../shared/appState'
 
 // ---------- 助手消息的有序 block 模型 ----------
 // 一个助手回合由若干有序 block 组成，渲染严格按数组顺序输出。
@@ -205,14 +211,9 @@ watch(
   },
 )
 
-// 隐藏报告面板（面板内「隐藏」按钮）。
+// 隐藏报告面板（面板内「隐藏」按钮）。隐藏后经左侧边栏入口重新展开（见 focusReportPanel）。
 function hideReportPanel(): void {
   reportPanelOpen.value = false
-}
-
-// 展开报告面板（悬浮角标「📊 报告」点击）。
-function openReportPanel(): void {
-  reportPanelOpen.value = true
 }
 
 // 跳转到完整报告页（/result/:id，全展开）。
@@ -940,6 +941,8 @@ async function loadConversation(id: number): Promise<void> {
     atBottom.value = true
     hasUnreadBelow.value = false
     void scrollToBottom(true)
+    // 续聊会话载入完成，聚焦输入框便于继续对话
+    autoFocusInput()
   } catch (err) {
     // 加载失败：提示并回退为一段空白新对话（去掉 query.c，避免反复重试）
     flashHint(err instanceof Error ? err.message : '加载历史会话失败，已切换为新对话', true)
@@ -1010,6 +1013,8 @@ function newConversation(): void {
   hasUnreadBelow.value = false
   // 当前停留在 /?c=<id> 时，回到干净的 '/'（无 query）开始新对话
   if (route.query.c != null) void router.replace('/')
+  // 新对话就绪，聚焦输入框便于立即开始
+  autoFocusInput()
 }
 
 // 侧边栏「新对话」按钮：通过共享信号触发本视图重置（路由跳转由侧栏负责）。
@@ -1110,6 +1115,16 @@ function resetTextareaHeight(): void {
   if (el) el.style.height = 'auto'
 }
 
+// 让输入框获得焦点（聚焦同时会经 composer 的 focusin 展开输入区）。
+// 仅宽屏自动聚焦：移动端自动聚焦会立刻弹出软键盘，打扰浏览，故跳过。
+function autoFocusInput(): void {
+  if (!isWide.value) return
+  void nextTick(() => textareaRef.value?.focus())
+}
+
+// 页面打开即聚焦输入框，用户可直接开始输入。
+onMounted(autoFocusInput)
+
 // 输入内容变化时同步高度。
 watch(input, () => {
   void nextTick(autoGrow)
@@ -1196,6 +1211,29 @@ function focusReportPanel(): void {
     })
   })
 }
+
+// ---------- 与左侧边栏的报告入口协同 ----------
+// 报告/学习方案入口已移到 SideNav（取代原右下角悬浮角标，避免与发送按钮重叠）。
+// 把「是否有报告 / 面板是否展开 / 是否已出方案」实时同步给侧栏，让其据此显示入口。
+watch(
+  [() => latestReport.value != null, reportPanelOpen, hasPlan],
+  ([avail, open, plan]) => {
+    reportNav.available = avail
+    reportNav.open = open
+    reportNav.hasPlan = plan
+  },
+  { immediate: true },
+)
+
+// 侧栏点击「报告 / 学习方案」入口 → 展开并滚动高亮报告面板（复用 chip 的定位逻辑）。
+watch(openReportSignal, () => {
+  if (latestReport.value) focusReportPanel()
+})
+
+// 离开对话视图时清空入口状态，避免其它视图下侧栏残留报告入口。
+onUnmounted(() => {
+  reportNav.available = false
+})
 </script>
 
 <template>
@@ -1828,17 +1866,8 @@ function focusReportPanel(): void {
     </div>
     <!-- /左右两栏外壳 -->
 
-    <!-- 报告被隐藏但存在最新报告：悬浮角标按钮，点击重新展开面板 -->
-    <button
-      v-if="latestReport && !reportPanelOpen"
-      type="button"
-      class="report-fab"
-      title="展开匹配分析摘要"
-      @click="openReportPanel"
-    >
-      <span class="report-fab__icon" aria-hidden="true">📊</span>
-      报告
-    </button>
+    <!-- 报告被隐藏时的重新展开入口已移到左侧边栏（SideNav 的「报告 / 学习方案」），
+         统一视觉并避免原右下角悬浮角标与发送按钮重叠。 -->
 
     <!-- JD 库（自包含模态）：composer 的「JD 库」按钮打开；选条后加入本次分析 -->
     <JdLibrary :open="jdLibraryOpen" @close="closeJdLibrary" @use="onUseSavedJds" />
@@ -2031,42 +2060,6 @@ function focusReportPanel(): void {
 
 .report-panel__cta-arrow {
   font-size: 1em;
-  line-height: 1;
-}
-
-/* 报告被隐藏时的悬浮角标按钮：固定在视口右下角，点击重新展开面板 */
-.report-fab {
-  position: fixed;
-  right: var(--space-5);
-  bottom: var(--space-6);
-  z-index: 20;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 16px;
-  border: 1px solid var(--brand);
-  border-radius: var(--radius-pill);
-  background: var(--brand);
-  color: var(--text-on-brand);
-  font-size: 0.85rem;
-  font-weight: 600;
-  box-shadow: var(--shadow-md);
-  cursor: pointer;
-  transition:
-    background var(--transition),
-    transform var(--transition);
-}
-
-.report-fab:hover {
-  background: var(--brand-hover);
-}
-
-.report-fab:active {
-  transform: translateY(1px);
-}
-
-.report-fab__icon {
-  font-size: 0.95em;
   line-height: 1;
 }
 
@@ -3438,12 +3431,6 @@ function focusReportPanel(): void {
 
   .report-chip__where--narrow {
     display: inline;
-  }
-
-  /* 悬浮角标上移，避免遮挡窄屏底部内容（此处 composer 为静态流式排布） */
-  .report-fab {
-    right: var(--space-4);
-    bottom: var(--space-4);
   }
 }
 

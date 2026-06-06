@@ -77,3 +77,27 @@ export const conversationsChanged = ref(0)
 export function notifyConversationsChanged(): void {
   conversationsChanged.value++
 }
+
+// —— 报告面板跨组件协同（ChatView ⇄ SideNav）——
+// 报告/学习方案的入口从右下角悬浮角标移到左侧边栏，统一视觉、避免与发送按钮重叠。
+// ChatView 把「当前是否有报告 / 面板是否展开 / 是否已出方案」同步到 reportNav，
+// 侧栏据此显示「报告 / 学习方案」入口；点击入口发 openReportSignal，
+// ChatView watch 到后展开并滚动高亮报告面板。
+
+/**
+ * 报告导航状态（由 ChatView 写入，SideNav 读取）：
+ * - available：当前对话是否已有最新报告（无则侧栏不显示入口）。
+ * - open：报告面板是否展开（决定侧栏入口的高亮态）。
+ * - hasPlan：是否已生成学习方案（决定入口图标/文案：🎓学习方案 / 📊匹配分析）。
+ */
+export const reportNav = reactive({
+  available: false,
+  open: false,
+  hasPlan: false,
+})
+
+/** 「展开/定位报告面板」信号：侧栏点击 +1；ChatView watch 到后展开并滚动高亮。 */
+export const openReportSignal = ref(0)
+export function requestOpenReport(): void {
+  openReportSignal.value++
+}
