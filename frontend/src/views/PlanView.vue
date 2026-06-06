@@ -3,13 +3,14 @@
 // runId = analysis_run_id（与 ChatView currentRunId、/result/:id 同源）。
 import { computed, onMounted, ref } from 'vue'
 import { getJourney, getProgress, listCheckIns, listTasks, replanJourney } from '../api/client'
-import type { CheckIn, JourneyState, ProgressSummary, Task } from '../types'
+import type { CheckIn, InterviewReplay, JourneyState, ProgressSummary, Task } from '../types'
 import { localTodayIso, STAGE_LABEL } from '../shared/journey'
 import { notifyProgressChanged } from '../shared/appState'
 import AppCard from '../components/ui/AppCard.vue'
 import ScoreRing from '../components/ui/ScoreRing.vue'
 import TaskChecklist from '../components/TaskChecklist.vue'
 import CheckInCard from '../components/CheckInCard.vue'
+import InterviewReplayCard from '../components/InterviewReplayCard.vue'
 
 const props = defineProps<{ runId: string }>()
 
@@ -26,13 +27,17 @@ const runIdNum = computed(() => Number(props.runId))
 const doneTaskIds = computed(() => tasks.value.filter((t) => t.status === 'done').map((t) => t.id))
 const ratePct = computed(() => Math.round((progress.value?.completion_rate || 0) * 100))
 
-const todayIso = localTodayIso()
 const isActive = (t: Task) => t.status === 'todo' || t.status === 'doing'
-// 今日待办 + 逾期未完成（逾期在「结算」后会被顺延到今天起）
-const todayTasks = computed(() => tasks.value.filter((t) => isActive(t) && t.planned_date === todayIso))
-const overdueTasks = computed(() =>
-  tasks.value.filter((t) => isActive(t) && t.planned_date && t.planned_date < todayIso),
-)
+// 今日待办 + 逾期未完成（逾期在「结算」后会被顺延到今天起）。
+// 每次重算都取「当下的本地今天」，避免页面长开跨午夜后口径漂移，且与回灌写入的 planned_date 同口径。
+const todayTasks = computed(() => {
+  const today = localTodayIso()
+  return tasks.value.filter((t) => isActive(t) && t.planned_date === today)
+})
+const overdueTasks = computed(() => {
+  const today = localTodayIso()
+  return tasks.value.filter((t) => isActive(t) && t.planned_date && t.planned_date < today)
+})
 
 onMounted(load)
 
@@ -96,6 +101,17 @@ async function quietRefresh(): Promise<void> {
 function showFlash(msg: string, ms = 2800): void {
   flash.value = msg
   window.setTimeout(() => (flash.value = ''), ms)
+}
+
+function onInterviewReplayed(res: InterviewReplay): void {
+  const n = res.boosted_tasks.length
+  // 后端已把命中盲区的任务提权并拉到今天，重拉任务让「今日任务」与重点高亮即时刷新
+  void quietRefresh()
+  showFlash(
+    n > 0
+      ? `已回灌：${n} 条盲区任务标为重点并提到今天 🎯`
+      : '已记录面经；当前计划暂无可匹配任务（见卡内「建议加练」）',
+  )
 }
 
 function onCheckinSaved(ci: CheckIn): void {
@@ -213,6 +229,11 @@ function onError(msg: string): void {
         <p v-if="journey?.last_replanned_at" class="plan-today__stamp">
           🔄 上次重排：{{ fmtTime(journey.last_replanned_at) }}
         </p>
+      </AppCard>
+
+      <!-- 面经复盘 → 盲区 → 权重回灌（碰壁期闭环 F1） -->
+      <AppCard>
+        <InterviewReplayCard @replayed="onInterviewReplayed" @error="onError" />
       </AppCard>
 
       <div class="plan-grid">

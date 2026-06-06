@@ -22,8 +22,9 @@ from datetime import date, timedelta
 from sqlalchemy import delete
 
 from app.database import SessionLocal, init_db
-from app.models import AnalysisRun, CheckIn, JourneyState, Resume, Task, _utcnow
+from app.models import AnalysisRun, CheckIn, InterviewLog, JourneyState, Resume, Task, _utcnow
 from app.services import pipeline
+from app.services.interview import extract_blind_spots, reweight_from_blind_spots
 from app.services.journey import ensure_journey
 from app.services.materialize import materialize_tasks
 from app.services.replan import replan_journey
@@ -80,7 +81,8 @@ DEMO_JDS = [
 
 
 def _wipe_state(db) -> None:
-    """只清空闭环三张状态表里的演示用户数据，保留简历与历史分析。"""
+    """只清空闭环状态表里的演示用户数据，保留简历与历史分析。"""
+    db.execute(delete(InterviewLog).where(InterviewLog.user_id == DEMO_USER))
     db.execute(delete(CheckIn).where(CheckIn.user_id == DEMO_USER))
     db.execute(delete(Task).where(Task.user_id == DEMO_USER))
     db.execute(delete(JourneyState).where(JourneyState.user_id == DEMO_USER))
@@ -149,11 +151,31 @@ def main() -> None:
         # 5) 触发一次动态再规划（结算）：顺延逾期 + 重组日程 + 写 signals → 看板「节奏洞察」
         replan_journey(db, journey, today=today, settle=True)
 
+        # 6) 模拟一次面经复盘 → 盲区回灌（F1）：让「今日任务」出现 🎯 重点任务
+        iv_content = "面试被问到 TypeScript 泛型和 React Hooks 原理，答得磕磕绊绊。"
+        spots = extract_blind_spots(iv_content, run)
+        rw = reweight_from_blind_spots(db, journey, spots, today=today)
+        for s in spots:
+            s["matched"] = s["skill_key"] in rw["matched_keys"]
+        db.add(
+            InterviewLog(
+                user_id=DEMO_USER,
+                journey_id=journey.id,
+                analysis_run_id=run.id,
+                company="某互联网公司",
+                role="前端实习",
+                content=iv_content,
+                blind_spots=spots,
+            )
+        )
+        db.commit()
+
         print("✅ 演示数据已就绪：")
         print(f"   analysis_run_id = {run.id}（engine={outcome['engine']}）")
         print(f"   journey_id      = {journey.id}  start_date={journey.start_date}")
         print(f"   tasks           = {len(tasks)}  done={len(done_ids)}")
         print(f"   signals         = {journey.signals}")
+        print(f"   面经盲区回灌      = {len(rw['boosted'])} 条任务标为重点（盲区 {len(spots)} 个）")
         print()
         print("启动前后端后访问：")
         print(f"   /plan/{run.id}    执行计划（今日任务 + 结算重排 + 每日打卡）")

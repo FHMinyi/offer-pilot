@@ -73,7 +73,9 @@ def test_verify_schema_ok_for_current_models(client):
 
 
 def test_verify_schema_includes_milestone1_tables(client):
-    # C1：三张状态表已入模型，create_all 应自动建出，metadata 恰覆盖 8 表基线。
+    # C1：三张状态表已入模型，create_all 应自动建出。
+    # 里程碑一基线必须始终是 expected 的子集；后续里程碑会再加表（如 F1 的 interview_logs），
+    # 故用子集断言而非精确相等。
     from app.db_guard import MILESTONE1_TABLES
 
     report = verify_schema()
@@ -81,4 +83,5 @@ def test_verify_schema_includes_milestone1_tables(client):
     for t in ("journey_states", "tasks", "check_ins"):
         assert t in report["expected"]
         assert t in report["actual"]
-    assert set(report["expected"]) == MILESTONE1_TABLES
+    assert MILESTONE1_TABLES <= set(report["expected"])
+    assert "interview_logs" in report["expected"]  # F1 新增表已并入声明

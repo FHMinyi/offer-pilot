@@ -13,6 +13,9 @@ import type {
   CheckInUpsert,
   ConversationDetail,
   ConversationSummary,
+  InterviewCreate,
+  InterviewLog,
+  InterviewReplay,
   JourneyPatch,
   JourneyState,
   PersistedTurn,
@@ -467,6 +470,23 @@ export async function replanJourney(id: number, payload: ReplanRequest = {}): Pr
     body: JSON.stringify(payload),
   })
   return handle<ReplanResult>(res)
+}
+
+/** 提交一次面经复盘：抽盲区 + 权重回灌（命中任务提权并拉到今天）。 */
+export async function createInterview(payload: InterviewCreate): Promise<InterviewReplay> {
+  const res = await apiFetch('/api/interviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // 默认带本地自然日，让回灌把命中任务拉到「今天」；调用方显式传入可覆盖
+    body: JSON.stringify({ today: localTodayIso(), ...payload }),
+  })
+  return handle<InterviewReplay>(res)
+}
+
+/** 面经复盘列表（按时间倒序）。 */
+export async function listInterviews(): Promise<InterviewLog[]> {
+  const res = await apiFetch('/api/interviews')
+  return handle<InterviewLog[]>(res)
 }
 
 /** 进度汇总（实时聚合 Task + 惰性 streak）。 */

@@ -99,15 +99,22 @@ def complete_json(system: str, user: str, model: str | None = None) -> dict:
     provider = settings.llm_provider.lower()
     try:
         if provider == "openai":
-            return _call_openai(system, user, use_model)
-        if provider == "anthropic":
-            return _call_anthropic(system, user, use_model)
-        raise LLMUnavailable(f"不支持的 provider: {provider}")
+            result = _call_openai(system, user, use_model)
+        elif provider == "anthropic":
+            result = _call_anthropic(system, user, use_model)
+        else:
+            raise LLMUnavailable(f"不支持的 provider: {provider}")
     except LLMUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001 调用异常统一降级处理
         logger.warning("LLM 调用失败，降级为规则解析：%s", exc)
         raise LLMUnavailable(str(exc)) from exc
+    # 顶层必须是 JSON 对象：模型偶发吐数组/标量（尤其无强制 json 模式的兼容服务）时
+    # 按「不可用」降级，而非让调用方对 list/标量做 .get 崩溃（统一守护所有 complete_json 调用方）。
+    if not isinstance(result, dict):
+        logger.warning("LLM 返回非 JSON 对象（顶层为 %s），降级为规则解析", type(result).__name__)
+        raise LLMUnavailable("LLM 返回的不是 JSON 对象")
+    return result
 
 
 # 记录哪些客户端类型在按环境代理构造时失败过，之后直接忽略环境代理，避免重复尝试与刷屏

@@ -89,6 +89,7 @@ async function toggle(task: Task): Promise<void> {
             'check-item--done': t.done,
             'check-item--doing': t.status === 'doing',
             'check-item--atrisk': t.weight === 0 && !t.done,
+            'check-item--focus': t.weight >= 2 && !t.done,
           }"
         >
           <label class="check-item__label">
@@ -107,6 +108,12 @@ async function toggle(task: Task): Promise<void> {
               class="check-item__flag"
               title="已多次顺延，优先级下调"
               >⚠ 顺延</span
+            >
+            <span
+              v-else-if="t.weight >= 2 && !t.done"
+              class="check-item__focus"
+              title="面试盲区 · 重点强化"
+              >🎯 重点</span
             >
             <span v-if="showDate && t.planned_date" class="check-item__date">{{
               shortDate(t.planned_date)
@@ -202,6 +209,18 @@ async function toggle(task: Task): Promise<void> {
   font-size: 0.72rem;
   font-weight: 600;
   color: var(--warning);
+}
+
+/* 面试盲区回灌（weight 提升）：强调为重点（F1） */
+.check-item--focus {
+  background: var(--brand-soft);
+}
+
+.check-item__focus {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--brand);
 }
 
 .check-item__date {

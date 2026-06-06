@@ -337,3 +337,47 @@ class ReplanRequest(BaseModel):
 class ReplanOut(BaseModel):
     journey: JourneyOut
     tasks: list[TaskOut]
+
+
+# ---------------------------------------------------------------------------
+# 轨道 F1 · 面经复盘 → 盲区提取 → 权重回灌
+# ---------------------------------------------------------------------------
+
+BlindSpotSeverity = Literal["high", "mid", "low"]
+
+
+class BlindSpotItem(BaseModel):
+    """一条面试盲区：归一到技能本体的薄弱/被问倒技能。"""
+
+    skill_key: str
+    skill_name: str
+    severity: BlindSpotSeverity = "mid"
+    evidence: list[str] = Field(default_factory=list, description="命中的原始词/被问到的点")
+    matched: bool = False  # 是否命中当前计划中的任务（命中则已被权重回灌）
+
+
+class InterviewLogCreate(BaseModel):
+    content: str = Field(..., min_length=1, description="面经/复盘原文")
+    company: str = ""
+    role: str = Field("", description="面试岗位/方向")
+    # 客户端本地自然日；回灌时把命中任务的 planned_date 拉到这一天（进入「今日任务」）
+    today: DateField | None = None
+
+
+class InterviewLogOut(BaseModel):
+    id: int
+    company: str
+    role: str
+    content: str
+    blind_spots: list[BlindSpotItem] = Field(default_factory=list)
+    created_at: UtcDateTime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InterviewReplayOut(BaseModel):
+    """提交面经的回包：复盘记录 + 被回灌的任务 + 计划未覆盖的盲区（建议加练）。"""
+
+    interview: InterviewLogOut
+    boosted_tasks: list[TaskOut] = Field(default_factory=list)
+    unmatched_skills: list[BlindSpotItem] = Field(default_factory=list)

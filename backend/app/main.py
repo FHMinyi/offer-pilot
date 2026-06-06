@@ -16,6 +16,7 @@ from .routers import (
     chat,
     checkins,
     conversations,
+    interviews,
     jobs,
     journey,
     progress,
@@ -74,6 +75,7 @@ app.include_router(tasks.router)
 app.include_router(checkins.router)
 app.include_router(journey.router)
 app.include_router(progress.router)
+app.include_router(interviews.router)
 
 
 @app.get("/api/health", tags=["meta"])

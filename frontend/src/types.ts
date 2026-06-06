@@ -351,6 +351,44 @@ export interface RecentDay {
   checked: boolean
 }
 
+// ===================================================================
+//  轨道 F1 · 面经复盘 → 盲区提取 → 权重回灌
+// ===================================================================
+
+/** 面试盲区：归一到技能本体的薄弱/被问倒技能（high/mid/low） */
+export interface BlindSpot {
+  skill_key: string
+  skill_name: string
+  severity: 'high' | 'mid' | 'low'
+  evidence: string[] // 命中的原始词/被问到的点
+  matched: boolean // 是否命中当前计划任务（命中=已被权重回灌）
+}
+
+/** 面经复盘记录 */
+export interface InterviewLog {
+  id: number
+  company: string
+  role: string
+  content: string
+  blind_spots: BlindSpot[]
+  created_at: string
+}
+
+/** POST /api/interviews 请求体 */
+export interface InterviewCreate {
+  content: string
+  company?: string
+  role?: string
+  today?: string // 本地自然日；回灌时把命中任务拉到这天（进入今日任务）
+}
+
+/** 提交面经回包：复盘记录 + 被回灌的任务 + 计划未覆盖的盲区（建议加练） */
+export interface InterviewReplay {
+  interview: InterviewLog
+  boosted_tasks: Task[]
+  unmatched_skills: BlindSpot[]
+}
+
 /** 进度汇总（GET /api/progress 实时聚合 + 惰性 streak） */
 export interface ProgressSummary {
   total_tasks: number

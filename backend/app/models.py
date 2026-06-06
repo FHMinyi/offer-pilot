@@ -219,3 +219,31 @@ class CheckIn(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class InterviewLog(Base):
+    """面经复盘（轨道 F1 · 碰壁期闭环输入端）：一次面试的复盘文本 + 提取出的盲区技能。
+
+    闭环：面经文本 → 盲区(blind_spots, 经技能本体归一) → 权重回灌到匹配的 Task
+    （提 weight + 把命中的未完成任务拉到今天）。day-one 带 user_id，与未来真实账号同形。
+    """
+
+    __tablename__ = "interview_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    journey_id: Mapped[int | None] = mapped_column(
+        ForeignKey("journey_states.id"), nullable=True, index=True
+    )
+    analysis_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("analysis_runs.id"), nullable=True, index=True
+    )
+    company: Mapped[str] = mapped_column(String(255), default="")
+    role: Mapped[str] = mapped_column(String(255), default="")  # 面试岗位/方向
+    content: Mapped[str] = mapped_column(Text, nullable=False)  # 面经/复盘原文
+    # 提取出的盲区：list[{skill_key, skill_name, severity(high/mid/low), evidence:list, matched:bool}]
+    blind_spots: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

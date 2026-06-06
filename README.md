@@ -12,7 +12,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)
 ![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688.svg)
-![tests](https://img.shields.io/badge/backend_tests-83_passed-16a34a.svg)
+![tests](https://img.shields.io/badge/backend_tests-92_passed-16a34a.svg)
 
 ---
 
@@ -66,7 +66,12 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 天然幂等（逾期任务已被移到 ≥ 今天，二次结算无可降权项）。
 → `backend/app/services/replan.py`、`backend/app/routers/journey.py`
 
-> 加分项：**人设引擎**（理智脑/情感脑解耦）——单一人设 + 语气强度滑块，只调系统提示的措辞，
+> 加分项 ①：**碰壁期闭环**——面经复盘 → 盲区提取（LLM 抽取 / 规则 `match_skills`，统一归一到
+> 技能本体；命中已知缺口的盲区升级严重度）→ 权重回灌（命中盲区的未完成任务提 `weight` 并提到今天，
+> 前端标「🎯 重点」）。把「面试受挫」转成「下一轮学习的优先级」。
+> → `backend/app/services/interview.py`、`backend/app/routers/interviews.py`
+>
+> 加分项 ②：**人设引擎**（理智脑/情感脑解耦）——单一人设 + 语气强度滑块，只调系统提示的措辞，
 > 不动分析逻辑与工作流。→ `backend/app/services/agent.py`（`_tone_directive`）
 
 ---
@@ -130,7 +135,7 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
                  │  闭环服务：ensure_journey → materialize(幂等) → replan(顺延/重组/降权)    │
                  │  tasks / checkins / journey / progress 路由（实时聚合，无定时任务）       │
                  └───────────────────────────────────┬──────────────────────────────────────┘
-                                              SQLite / PostgreSQL（8 表）
+                                              SQLite / PostgreSQL（9 表）
 ```
 
 **里程碑一地基（薄切多租户接缝 + 守门）**：所有闭环表 day-one 带 `user_id String(64)`，
@@ -157,13 +162,14 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 | GET · PATCH | `/api/journey` · `/api/journey/{id}` | 旅程读取 / 更新 |
 | POST | `/api/journey/{id}/replan` | **动态再规划**（顺延/重组/降权） |
 | GET | `/api/progress` | 进度聚合（完成率 / streak / 周进度 / 最近 7 天热力） |
+| POST · GET | `/api/interviews` | **面经复盘 → 盲区提取 → 权重回灌**（碰壁期闭环） |
 | GET | `/api/health` | 健康检查（含当前解析引擎） |
 
 启动后端后，交互式文档见 http://localhost:7968/docs 。
 
 ---
 
-## 数据模型（8 表 · SQLite 默认）
+## 数据模型（9 表 · SQLite 默认）
 
 | 表 | 作用 |
 |---|---|
@@ -172,15 +178,16 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 | `journey_states` | 旅程主表：阶段 / 多终态 status / 多维 signals / persona+tone / 计划周数 |
 | `tasks` | roadmap 物化的可勾选任务：四态 status、weight、`planned_date`、`order_index` |
 | `check_ins` | 每日打卡：`(user_id, date)` 唯一、upsert、引用 `Task.id` 稳定主键 |
+| `interview_logs` | 面经复盘：复盘原文 + 提取出的盲区（用于权重回灌） |
 
-闭环三表（`journey_states` / `tasks` / `check_ins`）均 day-one 带 `user_id`，与未来真实账号同形。
+闭环表（`journey_states` / `tasks` / `check_ins` / `interview_logs`）均 day-one 带 `user_id`，与未来真实账号同形。
 
 ---
 
 ## 测试
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q     # 规则模式离线端到端 + 闭环/再规划/人设，83 passed
+cd backend && .venv/bin/python -m pytest -q     # 规则模式离线端到端 + 闭环/再规划/人设/面经回灌，92 passed
 cd frontend && npm run build                      # vue-tsc 类型检查 + vite 构建
 ```
 
@@ -194,7 +201,9 @@ cd frontend && npm run build                      # vue-tsc 类型检查 + vite 
 - ✅ **里程碑一 · 有状态闭环地基**：多租户接缝 + 守门、三张状态表、幂等物化契约、读写 API、前端接入。
 - ✅ **里程碑二 · 注入灵魂**：动态再规划引擎（任务排到天 + 顺延/重组/降权 + 打卡自动结算）、
   人设引擎（语气滑块）、进度可视化（完成率环 / 7 天热力 / 阶段步骤条 / 节奏洞察）。
-- ⏭️ **下一步**：旅程状态机（按多维信号判定阶段并触发干预）、面经复盘→盲区→权重回灌、
+- ✅ **碰壁期闭环（F1）**：面经复盘 → 盲区提取（LLM/规则归一到技能本体）→ 权重回灌
+  （命中盲区的未完成任务提权并提到今天，前端标「🎯 重点」；计划未覆盖的盲区建议加练）。
+- ⏭️ **下一步**：旅程状态机（按多维信号判定阶段并触发干预）、
   真实环境感知（浏览器扩展抓当前 JD / 复用现成爬虫，放后期、默认关）。
 
 详见 [docs/行动计划.md](docs/行动计划.md)。
