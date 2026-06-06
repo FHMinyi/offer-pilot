@@ -308,8 +308,22 @@ export interface JourneyState {
   start_date: string | null
   planned_weeks: number
   current_week: number
+  signals: Record<string, unknown> // E1.2 再规划信号(progress_health/carried_over/remaining)
+  last_replanned_at: string | null // 最近一次动态重排时间
   created_at: string
   updated_at: string
+}
+
+/** POST /api/journey/{id}/replan 请求体 */
+export interface ReplanRequest {
+  settle?: boolean // 结算降权（结算按钮传 true）
+  today?: string // 本地自然日 YYYY-MM-DD
+}
+
+/** 动态再规划返回：更新后的旅程 + 全部活跃任务 */
+export interface ReplanResult {
+  journey: JourneyState
+  tasks: Task[]
 }
 
 /** PATCH /api/journey/{id} 请求体 */

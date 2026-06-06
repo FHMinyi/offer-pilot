@@ -13,7 +13,14 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..models import JourneyState
 from ..ownership import require_owned, scope_to_user
-from ..schemas import JourneyOut, JourneyPatchRequest
+from ..schemas import (
+    JourneyOut,
+    JourneyPatchRequest,
+    ReplanOut,
+    ReplanRequest,
+    TaskOut,
+)
+from ..services.replan import replan_journey
 
 router = APIRouter(prefix="/api/journey", tags=["journey"])
 
@@ -58,3 +65,19 @@ def patch_journey(
     db.commit()
     db.refresh(journey)
     return journey
+
+
+@router.post("/{journey_id}/replan", response_model=ReplanOut)
+def replan(
+    journey_id: int,
+    payload: ReplanRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+) -> ReplanOut:
+    """按完成情况增量重排剩余日程（顺延/重组，settle=true 时结算降权）。"""
+    journey = require_owned(db, JourneyState, journey_id, user_id)
+    tasks = replan_journey(db, journey, today=payload.today, settle=payload.settle)
+    return ReplanOut(
+        journey=JourneyOut.model_validate(journey),
+        tasks=[TaskOut.model_validate(t) for t in tasks],
+    )

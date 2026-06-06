@@ -151,9 +151,29 @@ def test_materialize_links_journey_and_planned_date(client):
         journey = ensure_journey(db, run, "local")
         tasks = materialize_tasks(db, run, "local", journey)
         assert tasks and all(t.journey_id == journey.id for t in tasks)
+        # E1.1：planned_date 落在「该周 7 天窗口」内（不再全挤首日）
         for t in tasks:
             if journey.start_date and t.planned_date:
-                assert t.planned_date == journey.start_date + timedelta(days=(t.week - 1) * 7)
+                week_start = journey.start_date + timedelta(days=(t.week - 1) * 7)
+                assert week_start <= t.planned_date <= week_start + timedelta(days=6)
+    finally:
+        db.close()
+
+
+def test_materialize_distributes_tasks_across_week_days(client):
+    db = SessionLocal()
+    try:
+        run = _make_run(db, weeks=4)
+        journey = ensure_journey(db, run, "local")
+        tasks = materialize_tasks(db, run, "local", journey)
+        # 至少有一周的任务被摊到了多个不同的 planned_date（验证按天分布生效）
+        from collections import defaultdict
+
+        days_by_week: dict[int, set] = defaultdict(set)
+        for t in tasks:
+            if t.planned_date:
+                days_by_week[t.week].add(t.planned_date)
+        assert any(len(days) >= 2 for days in days_by_week.values()), "任务应被摊到一周中的多天"
     finally:
         db.close()
 

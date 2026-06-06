@@ -256,6 +256,8 @@ class JourneyOut(BaseModel):
     start_date: date | None = None
     planned_weeks: int
     current_week: int
+    signals: dict = Field(default_factory=dict)  # E1.2 再规划信号(progress_health/carried_over…)
+    last_replanned_at: UtcDateTime | None = None  # 最近一次动态重排时间
     created_at: UtcDateTime
     updated_at: UtcDateTime
 
@@ -313,3 +315,13 @@ class JourneyPatchRequest(BaseModel):
     target_role: str | None = None
     planned_weeks: int | None = Field(None, ge=1, le=12)
     current_week: int | None = Field(None, ge=1, le=12)
+
+
+class ReplanRequest(BaseModel):
+    settle: bool = Field(False, description="是否按每日结算降权逾期任务（结算按钮传 true）")
+    today: DateField | None = Field(None, description="缺省=服务器当日；前端通常传本地自然日")
+
+
+class ReplanOut(BaseModel):
+    journey: JourneyOut
+    tasks: list[TaskOut]

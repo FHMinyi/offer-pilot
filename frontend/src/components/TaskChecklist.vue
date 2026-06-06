@@ -7,7 +7,16 @@ import type { Task } from '../types'
 import { patchTask } from '../api/client'
 import { KIND_ICON, KIND_LABEL } from '../shared/journey'
 
-const props = defineProps<{ tasks: Task[] }>()
+const props = withDefaults(
+  defineProps<{
+    tasks: Task[]
+    /** 扁平单列表（不按周分组），用于「今日任务」 */
+    flat?: boolean
+    /** 在任务行展示 planned_date 日期徽标 */
+    showDate?: boolean
+  }>(),
+  { flat: false, showDate: false },
+)
 const emit = defineEmits<{
   (e: 'changed', task: Task): void
   (e: 'error', msg: string): void
@@ -24,6 +33,27 @@ const byWeek = computed(() => {
   for (const arr of m.values()) arr.sort((a, b) => a.order_index - b.order_index)
   return [...m.entries()].sort((a, b) => a[0] - b[0])
 })
+
+// 扁平模式：去 skipped，按 (week, order_index) 排一列。
+const flatList = computed(() =>
+  props.tasks
+    .filter((t) => t.status !== 'skipped')
+    .sort((a, b) => a.week - b.week || a.order_index - b.order_index),
+)
+
+/** planned_date(YYYY-MM-DD) → 简短「M/D」徽标。 */
+function shortDate(iso: string | null): string {
+  if (!iso) return ''
+  const m = /^\d{4}-(\d{2})-(\d{2})/.exec(iso)
+  return m ? `${Number(m[1])}/${Number(m[2])}` : ''
+}
+
+// 统一分组：flat 模式=单组无标题；否则按周分组。
+const groups = computed<{ week: number | null; items: Task[] }[]>(() =>
+  props.flat
+    ? [{ week: null, items: flatList.value }]
+    : byWeek.value.map(([week, items]) => ({ week, items })),
+)
 
 async function toggle(task: Task): Promise<void> {
   const nextStatus: Task['status'] = task.status === 'done' ? 'todo' : 'done'
@@ -48,14 +78,18 @@ async function toggle(task: Task): Promise<void> {
 
 <template>
   <div class="checklist stack">
-    <section v-for="[week, items] in byWeek" :key="week" class="checklist__week">
-      <h4 class="checklist__week-title">第 {{ week }} 周</h4>
+    <section v-for="(g, gi) in groups" :key="g.week ?? `flat-${gi}`" class="checklist__week">
+      <h4 v-if="g.week !== null" class="checklist__week-title">第 {{ g.week }} 周</h4>
       <ul class="check-list">
         <li
-          v-for="t in items"
+          v-for="t in g.items"
           :key="t.id"
           class="check-item"
-          :class="{ 'check-item--done': t.done, 'check-item--doing': t.status === 'doing' }"
+          :class="{
+            'check-item--done': t.done,
+            'check-item--doing': t.status === 'doing',
+            'check-item--atrisk': t.weight === 0 && !t.done,
+          }"
         >
           <label class="check-item__label">
             <input
@@ -68,11 +102,22 @@ async function toggle(task: Task): Promise<void> {
               KIND_ICON[t.kind]
             }}</span>
             <span class="check-item__title">{{ t.title }}</span>
+            <span
+              v-if="t.weight === 0 && !t.done"
+              class="check-item__flag"
+              title="已多次顺延，优先级下调"
+              >⚠ 顺延</span
+            >
+            <span v-if="showDate && t.planned_date" class="check-item__date">{{
+              shortDate(t.planned_date)
+            }}</span>
           </label>
         </li>
       </ul>
     </section>
-    <p v-if="!byWeek.length" class="muted checklist__empty">本计划暂无可执行任务。</p>
+    <p v-if="!groups.length || !groups[0].items.length" class="muted checklist__empty">
+      暂无可执行任务。
+    </p>
   </div>
 </template>
 
@@ -145,6 +190,26 @@ async function toggle(task: Task): Promise<void> {
 /* doing：里程碑二纠偏会写入，预留高亮钩子 */
 .check-item--doing {
   background: var(--brand-soft);
+}
+
+/* 已多次顺延（weight 归 0）：弱化为至危态 */
+.check-item--atrisk .check-item__title {
+  color: var(--text-muted);
+}
+
+.check-item__flag {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.check-item__date {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .checklist__empty {

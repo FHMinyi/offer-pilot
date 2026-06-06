@@ -18,6 +18,8 @@ import type {
   PersistedTurn,
   ProgressSummary,
   ReasoningEffort,
+  ReplanRequest,
+  ReplanResult,
   ResumeOut,
   SavedJd,
   SearchResultItem,
@@ -454,6 +456,16 @@ export async function patchJourney(id: number, patch: JourneyPatch): Promise<Jou
     body: JSON.stringify(patch),
   })
   return handle<JourneyState>(res)
+}
+
+/** 动态再规划：按完成情况顺延/重组剩余日程（settle=true 时结算降权）。 */
+export async function replanJourney(id: number, payload: ReplanRequest = {}): Promise<ReplanResult> {
+  const res = await apiFetch(`/api/journey/${id}/replan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return handle<ReplanResult>(res)
 }
 
 /** 进度汇总（实时聚合 Task + 惰性 streak）。 */

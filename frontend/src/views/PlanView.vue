@@ -2,7 +2,7 @@
 // 活计划页（路由 /plan/:runId）：把某次分析物化出的可勾选任务 + 今日打卡串成执行闭环。
 // runId = analysis_run_id（与 ChatView currentRunId、/result/:id 同源）。
 import { computed, onMounted, ref } from 'vue'
-import { getJourney, getProgress, listCheckIns, listTasks } from '../api/client'
+import { getJourney, getProgress, listCheckIns, listTasks, replanJourney } from '../api/client'
 import type { CheckIn, JourneyState, ProgressSummary, Task } from '../types'
 import { localTodayIso, STAGE_LABEL } from '../shared/journey'
 import { notifyProgressChanged } from '../shared/appState'
@@ -20,10 +20,19 @@ const todayCheckin = ref<CheckIn | null>(null)
 const loading = ref(true)
 const error = ref('')
 const flash = ref('')
+const replanning = ref(false)
 
 const runIdNum = computed(() => Number(props.runId))
 const doneTaskIds = computed(() => tasks.value.filter((t) => t.status === 'done').map((t) => t.id))
 const ratePct = computed(() => Math.round((progress.value?.completion_rate || 0) * 100))
+
+const todayIso = localTodayIso()
+const isActive = (t: Task) => t.status === 'todo' || t.status === 'doing'
+// 今日待办 + 逾期未完成（逾期在「结算」后会被顺延到今天起）
+const todayTasks = computed(() => tasks.value.filter((t) => isActive(t) && t.planned_date === todayIso))
+const overdueTasks = computed(() =>
+  tasks.value.filter((t) => isActive(t) && t.planned_date && t.planned_date < todayIso),
+)
 
 onMounted(load)
 
@@ -67,16 +76,71 @@ function onTaskChanged(): void {
   void refreshProgress()
 }
 
+/** 静默刷新任务+旅程+进度（打卡/重排后后端已变更日程，需重拉）。 */
+async function quietRefresh(): Promise<void> {
+  try {
+    const [t, j, p] = await Promise.all([
+      listTasks({ analysis_run_id: runIdNum.value }),
+      getJourney(),
+      getProgress(),
+    ])
+    tasks.value = t
+    journey.value = j
+    progress.value = p
+    notifyProgressChanged()
+  } catch {
+    /* 刷新失败不打扰 */
+  }
+}
+
+function showFlash(msg: string, ms = 2800): void {
+  flash.value = msg
+  window.setTimeout(() => (flash.value = ''), ms)
+}
+
 function onCheckinSaved(ci: CheckIn): void {
   todayCheckin.value = ci
-  flash.value = '已记录今日打卡 🎉'
-  void refreshProgress()
-  window.setTimeout(() => (flash.value = ''), 2400)
+  // 打卡=每日结算，后端已自动顺延/重组，重拉任务展示自适应结果
+  void quietRefresh()
+  showFlash('已记录今日打卡 🎉 计划已按进度自动重排')
+}
+
+/** 手动「结算今天并重排」：顺延逾期、重组剩余日程。 */
+async function settleToday(): Promise<void> {
+  if (!journey.value) return
+  replanning.value = true
+  try {
+    const res = await replanJourney(journey.value.id, { settle: true, today: localTodayIso() })
+    tasks.value = res.tasks
+    journey.value = res.journey
+    const carried = Number((res.journey.signals as { carried_over?: number })?.carried_over ?? 0)
+    showFlash(
+      carried > 0 ? `已重排：顺延 ${carried} 条未完成任务到今天起` : '已按进度重排日程 ✅',
+    )
+    void refreshProgress()
+  } catch (err) {
+    onError(err instanceof Error ? err.message : '重排失败')
+  } finally {
+    replanning.value = false
+  }
+}
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString('zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
 }
 
 function onError(msg: string): void {
-  flash.value = msg
-  window.setTimeout(() => (flash.value = ''), 3000)
+  showFlash(msg, 3000)
 }
 </script>
 
@@ -127,9 +191,33 @@ function onError(msg: string): void {
         </div>
       </header>
 
+      <!-- 今日任务：动态再规划的主舞台（结算 → 顺延逾期 + 重组日程） -->
+      <AppCard class="plan-today">
+        <div class="plan-today__head">
+          <span class="plan-today__title">📅 今日任务（{{ todayTasks.length }}）</span>
+          <button class="btn btn--primary" type="button" :disabled="replanning" @click="settleToday">
+            {{ replanning ? '重排中…' : '结算今天并重排' }}
+          </button>
+        </div>
+        <p v-if="overdueTasks.length" class="plan-today__overdue">
+          ⚠ {{ overdueTasks.length }} 条逾期未完成——点「结算」自动顺延到今天起并重组日程
+        </p>
+        <TaskChecklist
+          v-if="todayTasks.length || overdueTasks.length"
+          :tasks="[...overdueTasks, ...todayTasks]"
+          flat
+          @changed="onTaskChanged"
+          @error="onError"
+        />
+        <p v-else class="muted">今天没有排定任务，去下方看看整份计划吧。</p>
+        <p v-if="journey?.last_replanned_at" class="plan-today__stamp">
+          🔄 上次重排：{{ fmtTime(journey.last_replanned_at) }}
+        </p>
+      </AppCard>
+
       <div class="plan-grid">
         <AppCard class="plan-grid__main">
-          <TaskChecklist :tasks="tasks" @changed="onTaskChanged" @error="onError" />
+          <TaskChecklist :tasks="tasks" show-date @changed="onTaskChanged" @error="onError" />
         </AppCard>
         <AppCard class="plan-grid__aside">
           <CheckInCard
@@ -191,6 +279,35 @@ function onError(msg: string): void {
   flex-wrap: wrap;
   gap: 6px;
   font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.plan-today__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.plan-today__title {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.plan-today__overdue {
+  margin: 0 0 var(--space-2);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  border-left: 3px solid var(--warning);
+  color: var(--warning);
+  font-size: 0.84rem;
+}
+
+.plan-today__stamp {
+  margin: var(--space-2) 0 0;
+  font-size: 0.76rem;
   color: var(--text-muted);
 }
 

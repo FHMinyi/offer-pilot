@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_current_user
-from ..models import CheckIn
+from ..models import CheckIn, JourneyState
 from ..ownership import scope_to_user
 from ..schemas import CheckInOut, CheckInSaveRequest
+from ..services.replan import replan_journey
 
 router = APIRouter(prefix="/api/checkins", tags=["checkins"])
 
@@ -49,6 +50,19 @@ def upsert_checkin(
         row.completed_task_ids = payload.completed_task_ids
     db.commit()
     db.refresh(row)
+
+    # 打卡=每日结算：自动按进度顺延/重组剩余日程（失败不影响打卡本身）
+    try:
+        journey = db.scalars(
+            select(JourneyState)
+            .where(JourneyState.user_id == user_id, JourneyState.status == "active")
+            .order_by(JourneyState.id.desc())
+        ).first()
+        if journey is not None:
+            replan_journey(db, journey, today=the_date, settle=True)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+
     return row
 
 
