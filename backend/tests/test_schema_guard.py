@@ -85,3 +85,4 @@ def test_verify_schema_includes_milestone1_tables(client):
         assert t in report["actual"]
     assert MILESTONE1_TABLES <= set(report["expected"])
     assert "interview_logs" in report["expected"]  # F1 新增表已并入声明
+    assert "mastery_checks" in report["expected"]  # 掌握度判定新增表已并入声明

@@ -18,8 +18,12 @@ import type {
   InterviewReplay,
   JourneyPatch,
   JourneyState,
+  MasteryCheck,
+  MasteryJudgeOut,
+  MasteryQuestion,
   PersistedTurn,
   ProgressSummary,
+  QuizGenerateOut,
   ReasoningEffort,
   ReplanRequest,
   ReplanResult,
@@ -495,4 +499,65 @@ export async function getProgress(journeyId?: number): Promise<ProgressSummary> 
   // 与打卡 date（本地日）口径一致，避免服务器时区≠用户时区时跨日错位（见 progress.py 注释）。
   const res = await apiFetch(`/api/progress${qs({ journey_id: journeyId, today: localTodayIso() })}`)
   return handle<ProgressSummary>(res)
+}
+
+// ===================================================================
+//  费曼/出题判定学习掌握度（把校验前移到学习环节 · 复用 F1 学习闭环引擎）
+//  仅 learn 类任务有此能力；判定一次性返回（非流式）。
+// ===================================================================
+
+/** 费曼模式判定：用户用自己的话复述某 learn 任务的原理/关键点，提交一次性判定。 */
+export async function judgeFeynman(
+  taskId: number,
+  content: string,
+  today?: string,
+): Promise<MasteryJudgeOut> {
+  const res = await apiFetch('/api/mastery/feynman', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // 默认带本地自然日，命中缺口回灌时把任务拉到「今天」（同 F1 口径）；调用方可覆盖
+    body: JSON.stringify({ task_id: taskId, content, today: today ?? localTodayIso() }),
+  })
+  return handle<MasteryJudgeOut>(res)
+}
+
+/** 出题模式第一步：为某 learn 任务生成 2-3 道题（available=false 时引导手动标记）。 */
+export async function generateQuiz(taskId: number): Promise<QuizGenerateOut> {
+  const res = await apiFetch('/api/mastery/quiz/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId }),
+  })
+  return handle<QuizGenerateOut>(res)
+}
+
+/** 出题模式第二步：提交答案判分（questions 由前端原样回传，后端无状态）。 */
+export async function judgeQuiz(
+  taskId: number,
+  questions: MasteryQuestion[],
+  answers: string[],
+  today?: string,
+): Promise<MasteryJudgeOut> {
+  const res = await apiFetch('/api/mastery/quiz/judge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId, questions, answers, today: today ?? localTodayIso() }),
+  })
+  return handle<MasteryJudgeOut>(res)
+}
+
+/** 「我已掌握 ⭐」：用户最终决定权，直接把任务标为 mastered（不依赖 LLM）。 */
+export async function masterTask(taskId: number, today?: string): Promise<Task> {
+  const res = await apiFetch(`/api/mastery/tasks/${taskId}/master`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ today: today ?? localTodayIso() }),
+  })
+  return handle<Task>(res)
+}
+
+/** 判定记录列表（可回看，按时间倒序）。 */
+export async function listMasteryChecks(): Promise<MasteryCheck[]> {
+  const res = await apiFetch('/api/mastery')
+  return handle<MasteryCheck[]>(res)
 }

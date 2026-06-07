@@ -22,7 +22,16 @@ from datetime import date, timedelta
 from sqlalchemy import delete
 
 from app.database import SessionLocal, init_db
-from app.models import AnalysisRun, CheckIn, InterviewLog, JourneyState, Resume, Task, _utcnow
+from app.models import (
+    AnalysisRun,
+    CheckIn,
+    InterviewLog,
+    JourneyState,
+    MasteryCheck,
+    Resume,
+    Task,
+    _utcnow,
+)
 from app.services import pipeline
 from app.services.interview import extract_blind_spots, reweight_from_blind_spots
 from app.services.journey import ensure_journey
@@ -82,6 +91,7 @@ DEMO_JDS = [
 
 def _wipe_state(db) -> None:
     """只清空闭环状态表里的演示用户数据，保留简历与历史分析。"""
+    db.execute(delete(MasteryCheck).where(MasteryCheck.user_id == DEMO_USER))
     db.execute(delete(InterviewLog).where(InterviewLog.user_id == DEMO_USER))
     db.execute(delete(CheckIn).where(CheckIn.user_id == DEMO_USER))
     db.execute(delete(Task).where(Task.user_id == DEMO_USER))
@@ -170,12 +180,39 @@ def main() -> None:
         )
         db.commit()
 
+        # 7) 模拟一次「掌握度判定」（费曼/出题闭环）：把某个已完成的 learn 任务升级为
+        #    mastered ⭐，让「我的进度」看板的「真掌握率」非零、可录制 demo。
+        mastered_task = next(
+            (t for t in tasks if t.kind == "learn" and t.status == "done"), None
+        )
+        if mastered_task is not None:
+            mastered_task.mastery = "mastered"
+            mastered_task.mastered_at = _utcnow()
+            db.add(
+                MasteryCheck(
+                    user_id=DEMO_USER,
+                    journey_id=journey.id,
+                    analysis_run_id=run.id,
+                    task_id=mastered_task.id,
+                    mode="feynman",
+                    user_input="组件就是把界面拆成可复用的小块，props 父传子、state 管自身数据……",
+                    verdict="good",
+                    passed=True,
+                    feedback="讲清了组件化与单向数据流；能再说说 state 何时触发重渲染会更完整。",
+                    followup_questions=["state 更新为什么是异步批量的？"],
+                    engine="rule",
+                )
+            )
+            db.commit()
+
         print("✅ 演示数据已就绪：")
         print(f"   analysis_run_id = {run.id}（engine={outcome['engine']}）")
         print(f"   journey_id      = {journey.id}  start_date={journey.start_date}")
         print(f"   tasks           = {len(tasks)}  done={len(done_ids)}")
         print(f"   signals         = {journey.signals}")
         print(f"   面经盲区回灌      = {len(rw['boosted'])} 条任务标为重点（盲区 {len(spots)} 个）")
+        if mastered_task is not None:
+            print(f"   掌握度判定        = 任务「{mastered_task.title[:20]}」升级为 mastered ⭐")
         print()
         print("启动前后端后访问：")
         print(f"   /plan/{run.id}    执行计划（今日任务 + 结算重排 + 每日打卡）")

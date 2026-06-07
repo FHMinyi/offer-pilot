@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -185,6 +186,11 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(16), default="todo")  # 四态 todo/doing/done/skipped
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 双层状态第二层（费曼/出题判定，仅 learn 类有意义）：'unknown'=仅点勾或未判定；
+    # 'mastered'=通过费曼/出题判定或用户自评「我已掌握」。字符串列而非纯 mastered_at 判空，
+    # 与 status 四态风格一致，并为 v2「间隔重复 reviewing」预留扩展。mastered 隐含 done。
+    mastery: Mapped[str] = mapped_column(String(16), default="unknown")  # 'unknown' | 'mastered'
+    mastered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -196,6 +202,11 @@ class Task(Base):
     def done(self) -> bool:
         """便利只读字段：完成判定统一 status=='done'（供 TaskOut 序列化，非数据库列）。"""
         return self.status == "done"
+
+    @property
+    def mastered(self) -> bool:
+        """便利只读字段：是否已升级为「真掌握 ⭐」（供 TaskOut 序列化，非数据库列）。"""
+        return self.mastery == "mastered"
 
 
 class CheckIn(Base):
@@ -247,3 +258,41 @@ class InterviewLog(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class MasteryCheck(Base):
+    """费曼/出题判定记录（学习掌握度闭环 · 把校验前移到学习环节）。
+
+    与 InterviewLog 同构、共用一套「学习闭环引擎」：
+      用户复述/答题 → AI 判定(verdict + gaps) → gaps 归一为 blind_spots 同构结构
+      → 复用 reweight_from_blind_spots 回灌到匹配 Task（提 weight + 拉到今天）。
+    `gaps` 字段刻意与 InterviewLog.blind_spots 完全同构，喂回灌引擎零适配。
+    day-one 带 user_id，与未来真实账号同形。
+    """
+
+    __tablename__ = "mastery_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    journey_id: Mapped[int | None] = mapped_column(
+        ForeignKey("journey_states.id"), nullable=True, index=True
+    )
+    analysis_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("analysis_runs.id"), nullable=True, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id"), nullable=True, index=True  # 判定对象（learn 任务）
+    )
+    mode: Mapped[str] = mapped_column(String(16), default="feynman")  # 'feynman' | 'quiz'
+    # 费曼：用户复述原文；出题：用户作答（拼接文本，questions 另存）；自评：空
+    user_input: Mapped[str] = mapped_column(Text, default="")
+    # 出题模式 AI 出的题：list[{q, hint}]；费曼/自评为空
+    questions: Mapped[list] = mapped_column(JSON, default=list)
+    verdict: Mapped[str] = mapped_column(String(16), default="")  # excellent/good/fair/poor/""
+    passed: Mapped[bool] = mapped_column(Boolean, default=False)  # verdict∈{excellent,good} 或自评
+    feedback: Mapped[str] = mapped_column(Text, default="")  # AI 建设性反馈（教练不当法官）
+    followup_questions: Mapped[list] = mapped_column(JSON, default=list)  # 追问 list[str]
+    # 缺口：与 InterviewLog.blind_spots 同构 list[{skill_key, skill_name, severity, evidence, matched}]
+    gaps: Mapped[list] = mapped_column(JSON, default=list)
+    engine: Mapped[str] = mapped_column(String(32), default="rule")  # llm:openai/llm:anthropic/rule/manual
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -252,6 +252,9 @@ export type TaskStatus = 'todo' | 'doing' | 'done' | 'skipped'
 /** 任务类别：learn 学习 / deliverable 产出 / interview 面试 / review 复盘 */
 export type TaskKind = 'learn' | 'deliverable' | 'interview' | 'review'
 
+/** 掌握度第二层：unknown 未验证 / mastered 已掌握（荣誉态 ⭐，仅 learn 类有意义） */
+export type TaskMastery = 'unknown' | 'mastered'
+
 /** roadmap 物化出的可勾选任务行 */
 export interface Task {
   id: number
@@ -269,6 +272,10 @@ export interface Task {
   planned_date: string | null // YYYY-MM-DD
   done_at: string | null
   created_at: string
+  // 双层状态第二层（仅 learn 类有意义）：mastery 字符串 + mastered 便利字段 =(mastery==='mastered')
+  mastery: TaskMastery // 'unknown' | 'mastered'
+  mastered: boolean
+  mastered_at: string | null
 }
 
 /** PATCH /api/tasks/{id} 请求体 */
@@ -401,4 +408,55 @@ export interface ProgressSummary {
   last_checkin_date: string | null
   checked_in_today: boolean
   recent_days: RecentDay[] // E4：最近 7 个自然日打卡热力（旧→今，末位为今天）
+  // 掌握度叠加维度（与 completion_rate/done_tasks 语义独立，不相互覆盖）
+  mastered_tasks: number // 已升级为 mastered ⭐ 的任务数
+  total_learn_tasks: number // learn 类任务总数（mastery_rate 的分母）
+  mastery_rate: number // 0~1，= mastered_tasks / total_learn_tasks
+}
+
+// ===================================================================
+//  费曼/出题判定学习掌握度（把校验前移到学习环节 · 复用 F1 学习闭环引擎）
+//  snake_case 严格对齐后端 schemas（MasteryCheckOut / MasteryJudgeOut / QuizGenerateOut）。
+// ===================================================================
+
+/** 判定模式：feynman 费曼复述 / quiz AI 出题 */
+export type MasteryMode = 'feynman' | 'quiz'
+
+/** 掌握度四档 + 空串（降级/自评时无 AI 评级，前端不显示评级徽章） */
+export type MasteryVerdict = 'excellent' | 'good' | 'fair' | 'poor' | ''
+
+/** 出题模式 AI 出的一道题（hint 为可选作答方向提示） */
+export interface MasteryQuestion {
+  q: string
+  hint: string
+}
+
+/** 一条判定记录（可回看）。gaps 复用 F1 的 BlindSpot（后端为 BlindSpotItem，字段同构）。 */
+export interface MasteryCheck {
+  id: number
+  task_id: number | null
+  mode: MasteryMode
+  verdict: MasteryVerdict
+  passed: boolean
+  feedback: string
+  followup_questions: string[]
+  gaps: BlindSpot[]
+  engine: string
+  created_at: string
+}
+
+/** 判定回包（仿 InterviewReplay）：判定记录 + 被判定任务 + 回灌任务 + 未覆盖缺口。 */
+export interface MasteryJudgeOut {
+  check: MasteryCheck
+  task: Task // 被判定的任务（含更新后的 mastery）
+  available: boolean // 是否走了真实 AI 判定（false=降级，引导手动标记）
+  boosted_tasks: Task[]
+  unmatched_skills: BlindSpot[]
+}
+
+/** 出题模式第一步：为某 learn 任务生成 2-3 道题。 */
+export interface QuizGenerateOut {
+  task_id: number
+  questions: MasteryQuestion[]
+  available: boolean // false=未配置 LLM，前端引导走「我已掌握」手动标记
 }

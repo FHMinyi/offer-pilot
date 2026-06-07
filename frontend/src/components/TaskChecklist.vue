@@ -20,6 +20,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'changed', task: Task): void
   (e: 'error', msg: string): void
+  // 点「检验掌握 ▸」请求打开掌握度抽屉（由父提升 selectedTask）
+  (e: 'verify', task: Task): void
 }>()
 
 // 跳过系统软删 skipped；按周分组、周内按 order_index。
@@ -86,7 +88,8 @@ async function toggle(task: Task): Promise<void> {
           :key="t.id"
           class="check-item"
           :class="{
-            'check-item--done': t.done,
+            'check-item--done': t.done && !(t.mastered ?? false),
+            'check-item--mastered': t.mastered ?? false,
             'check-item--doing': t.status === 'doing',
             'check-item--atrisk': t.weight === 0 && !t.done,
             'check-item--focus': t.weight >= 2 && !t.done,
@@ -115,6 +118,20 @@ async function toggle(task: Task): Promise<void> {
               title="面试盲区 · 重点强化"
               >🎯 重点</span
             >
+            <!-- 荣誉态：已掌握金色 pill（区别于普通 done 的灰删除线） -->
+            <span v-if="t.mastered ?? false" class="check-item__mastered" title="已通过掌握度检验"
+              >已掌握 ⭐</span
+            >
+            <!-- learn 类且未 mastered：检验掌握入口（阻断冒泡，避免触发勾选） -->
+            <button
+              v-else-if="t.kind === 'learn'"
+              type="button"
+              class="check-item__verify"
+              title="费曼复述 / AI 出题，检验是否真正掌握"
+              @click.stop.prevent="emit('verify', t)"
+            >
+              检验掌握 ▸
+            </button>
             <span v-if="showDate && t.planned_date" class="check-item__date">{{
               shortDate(t.planned_date)
             }}</span>
@@ -221,6 +238,55 @@ async function toggle(task: Task): Promise<void> {
   font-size: 0.72rem;
   font-weight: 700;
   color: var(--brand);
+}
+
+/* 荣誉态「已掌握 ⭐」：金色 pill，不加删除线（区别于普通 done） */
+.check-item--mastered .check-item__title {
+  color: var(--text);
+}
+
+.check-item__mastered {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* 「检验掌握 ▸」行内入口（learn 类未 mastered） */
+.check-item__verify {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--brand);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+  transition:
+    opacity var(--transition),
+    background var(--transition),
+    border-color var(--transition);
+}
+
+/* 默认弱化，hover 行 / 键盘聚焦时显现，减少视觉噪声 */
+.check-item:hover .check-item__verify,
+.check-item__verify:focus-visible {
+  opacity: 1;
+}
+
+.check-item__verify:hover {
+  background: var(--brand-soft);
+  border-color: var(--brand);
 }
 
 .check-item__date {

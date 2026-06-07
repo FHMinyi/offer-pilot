@@ -11,6 +11,7 @@ import ScoreRing from '../components/ui/ScoreRing.vue'
 import TaskChecklist from '../components/TaskChecklist.vue'
 import CheckInCard from '../components/CheckInCard.vue'
 import InterviewReplayCard from '../components/InterviewReplayCard.vue'
+import MasteryDrawer from '../components/MasteryDrawer.vue'
 
 const props = defineProps<{ runId: string }>()
 
@@ -22,6 +23,8 @@ const loading = ref(true)
 const error = ref('')
 const flash = ref('')
 const replanning = ref(false)
+// 掌握度检验抽屉：非 null 即打开（被检验的任务）。状态提升到此处，各 TaskChecklist 实例共用。
+const selectedTask = ref<Task | null>(null)
 
 const runIdNum = computed(() => Number(props.runId))
 const doneTaskIds = computed(() => tasks.value.filter((t) => t.status === 'done').map((t) => t.id))
@@ -112,6 +115,18 @@ function onInterviewReplayed(res: InterviewReplay): void {
       ? `已回灌：${n} 条盲区任务标为重点并提到今天 🎯`
       : '已记录面经；当前计划暂无可匹配任务（见卡内「建议加练」）',
   )
+}
+
+/**
+ * 掌握度判定通过 / 手动标记「我已掌握」：用返回的权威 Task 就地替换数组对应项，
+ * 再刷新进度（mastered_tasks/mastery_rate）。不全量重拉，避免抽屉关闭时列表重排闪烁。
+ */
+function onMastered(task: Task): void {
+  const i = tasks.value.findIndex((t) => t.id === task.id)
+  if (i !== -1) tasks.value[i] = task
+  void refreshProgress()
+  notifyProgressChanged()
+  showFlash('已标记掌握 ⭐')
 }
 
 function onCheckinSaved(ci: CheckIn): void {
@@ -224,6 +239,7 @@ function onError(msg: string): void {
           flat
           @changed="onTaskChanged"
           @error="onError"
+          @verify="selectedTask = $event"
         />
         <p v-else class="muted">今天没有排定任务，去下方看看整份计划吧。</p>
         <p v-if="journey?.last_replanned_at" class="plan-today__stamp">
@@ -238,7 +254,13 @@ function onError(msg: string): void {
 
       <div class="plan-grid">
         <AppCard class="plan-grid__main">
-          <TaskChecklist :tasks="tasks" show-date @changed="onTaskChanged" @error="onError" />
+          <TaskChecklist
+            :tasks="tasks"
+            show-date
+            @changed="onTaskChanged"
+            @error="onError"
+            @verify="selectedTask = $event"
+          />
         </AppCard>
         <AppCard class="plan-grid__aside">
           <CheckInCard
@@ -250,6 +272,14 @@ function onError(msg: string): void {
         </AppCard>
       </div>
     </template>
+
+    <!-- 掌握度检验抽屉（费曼/出题判定）：selectedTask 非 null 即打开 -->
+    <MasteryDrawer
+      :task="selectedTask"
+      @mastered="onMastered"
+      @close="selectedTask = null"
+      @error="onError"
+    />
   </div>
 </template>
 

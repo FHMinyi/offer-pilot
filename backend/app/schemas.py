@@ -245,6 +245,10 @@ class TaskOut(BaseModel):
     done: bool = False  # 便利冗余字段 =(status=='done')，由 Task.done 属性提供
     planned_date: date | None = None
     done_at: UtcDateTime | None = None
+    # 双层状态第二层（仅 learn 类有意义）：mastery 字符串 + mastered 便利字段 =(mastery=='mastered')
+    mastery: str = "unknown"  # 'unknown' | 'mastered'
+    mastered: bool = False
+    mastered_at: UtcDateTime | None = None
     created_at: UtcDateTime
 
     model_config = ConfigDict(from_attributes=True)
@@ -292,6 +296,10 @@ class ProgressOut(BaseModel):
     checked_in_today: bool
     # E4 坚持天数可视化：最近 7 个自然日的打卡热力（旧→今，末位为今天）
     recent_days: list[RecentDayItem] = Field(default_factory=list)
+    # 双层状态：真掌握率（仅统计 learn 类）。done_tasks/completion_rate 口径不变，纯增量字段
+    mastered_tasks: int = 0
+    total_learn_tasks: int = 0
+    mastery_rate: float = 0.0  # 0~1，= mastered_tasks / total_learn_tasks
 
 
 class TaskPatchRequest(BaseModel):
@@ -379,5 +387,84 @@ class InterviewReplayOut(BaseModel):
     """提交面经的回包：复盘记录 + 被回灌的任务 + 计划未覆盖的盲区（建议加练）。"""
 
     interview: InterviewLogOut
+    boosted_tasks: list[TaskOut] = Field(default_factory=list)
+    unmatched_skills: list[BlindSpotItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 费曼/出题判定学习掌握度（把校验前移到学习环节 · 复用 F1 的学习闭环引擎）
+# ---------------------------------------------------------------------------
+
+MasteryMode = Literal["feynman", "quiz"]
+# 掌握度四档 + 空串（降级/自评时无 AI 评级）
+MasteryVerdict = Literal["excellent", "good", "fair", "poor", ""]
+
+
+class QuizQuestion(BaseModel):
+    """出题模式 AI 出的一道题。"""
+
+    q: str
+    hint: str = ""  # 可选作答方向提示
+
+
+class FeynmanJudgeRequest(BaseModel):
+    """费曼模式：用户用自己的话复述某 learn 任务，提交判定。"""
+
+    task_id: int
+    content: str = Field(..., min_length=1, description="用户的费曼复述原文")
+    # 命中缺口回灌时把任务 planned_date 拉到这一天（同 F1 口径）
+    today: DateField | None = None
+
+
+class QuizGenerateRequest(BaseModel):
+    """出题模式第一步：为某 learn 任务生成 2-3 道题。"""
+
+    task_id: int
+
+
+class QuizGenerateOut(BaseModel):
+    task_id: int
+    questions: list[QuizQuestion] = Field(default_factory=list)
+    available: bool = True  # False=未配置 LLM，前端引导走「我已掌握」手动标记
+
+
+class QuizJudgeRequest(BaseModel):
+    """出题模式第二步：提交答案判分（questions 由前端原样回传，无状态）。"""
+
+    task_id: int
+    questions: list[QuizQuestion] = Field(default_factory=list)
+    answers: list[str] = Field(default_factory=list)
+    today: DateField | None = None
+
+
+class MasterTaskRequest(BaseModel):
+    """「我已掌握」：用户最终决定权，直接标 mastered，不依赖 LLM。"""
+
+    today: DateField | None = None
+
+
+class MasteryCheckOut(BaseModel):
+    """一条判定记录（可回看）。gaps 复用 F1 的 BlindSpotItem，印证同构。"""
+
+    id: int
+    task_id: int | None = None
+    mode: MasteryMode = "feynman"
+    verdict: MasteryVerdict = ""
+    passed: bool = False
+    feedback: str = ""
+    followup_questions: list[str] = Field(default_factory=list)
+    gaps: list[BlindSpotItem] = Field(default_factory=list)
+    engine: str = "rule"
+    created_at: UtcDateTime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MasteryJudgeOut(BaseModel):
+    """判定回包（仿 InterviewReplayOut）：判定记录 + 被判定任务 + 回灌任务 + 未覆盖缺口。"""
+
+    check: MasteryCheckOut
+    task: TaskOut  # 被判定的任务（含更新后的 mastery）
+    available: bool = True  # 是否走了真实 AI 判定（False=降级，引导手动标记）
     boosted_tasks: list[TaskOut] = Field(default_factory=list)
     unmatched_skills: list[BlindSpotItem] = Field(default_factory=list)

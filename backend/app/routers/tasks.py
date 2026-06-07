@@ -60,6 +60,9 @@ def patch_task(
             task.done_at = task.done_at or datetime.now(timezone.utc)
         else:
             task.done_at = None
+            # mastered 隐含 done：取消完成则一并降级掌握态，避免「未完成却 mastered」脏态
+            task.mastery = "unknown"
+            task.mastered_at = None
     if payload.weight is not None:
         task.weight = payload.weight
     if payload.planned_date is not None:

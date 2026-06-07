@@ -24,6 +24,8 @@ const currentStageIndex = computed(() => {
 const doneCount = useCountUp(() => props.progress.done_tasks)
 const streakCount = useCountUp(() => props.progress.current_streak)
 const longestCount = useCountUp(() => props.progress.longest_streak)
+// 掌握度叠加维度（兜底防后端字段未上线时 undefined）
+const masteredCount = useCountUp(() => props.progress.mastered_tasks ?? 0)
 
 // 最近 7 天打卡热力（旧→今，后端 recent_days 保证 7 个单元、末位为今天）。
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六']
@@ -90,6 +92,10 @@ const insightIcon = (tone: 'ok' | 'warn' | 'done'): string =>
         <div class="stat">
           <span class="stat__num">{{ longestCount }}</span>
           <span class="stat__label">最长连续（天）</span>
+        </div>
+        <div class="stat">
+          <span class="stat__num">⭐ {{ masteredCount }}</span>
+          <span class="stat__label">已掌握</span>
         </div>
       </div>
     </div>

@@ -90,6 +90,13 @@ def get_progress(
     done = sum(1 for t in tasks if t.status == "done")
     completion_rate = (done / total) if total else 0.0
 
+    # 双层状态：真掌握率（仅统计 learn 类，分母用 learn 任务数避免 deliverable 稀释）。
+    # done_tasks/completion_rate 口径完全不变，以下为纯增量。
+    learn_tasks = [t for t in tasks if t.kind == "learn"]
+    total_learn = len(learn_tasks)
+    mastered_tasks = sum(1 for t in learn_tasks if t.mastery == "mastered")
+    mastery_rate = (mastered_tasks / total_learn) if total_learn else 0.0
+
     week_map: dict[int, dict[str, int]] = {}
     for t in tasks:
         slot = week_map.setdefault(t.week, {"total": 0, "done": 0})
@@ -138,4 +145,7 @@ def get_progress(
         last_checkin_date=last_checkin_date,
         checked_in_today=checked_in_today,
         recent_days=recent_days,
+        mastered_tasks=mastered_tasks,
+        total_learn_tasks=total_learn,
+        mastery_rate=mastery_rate,
     )
