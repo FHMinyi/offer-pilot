@@ -18,6 +18,7 @@ import type {
   InterviewReplay,
   JourneyPatch,
   JourneyState,
+  LLMOverride,
   MasteryCheck,
   MasteryJudgeOut,
   MasteryQuestion,
@@ -163,6 +164,35 @@ export async function getSkillGraph(): Promise<SkillGraph> {
   return handle<SkillGraph>(res)
 }
 
+/**
+ * 用前端填写的自定义大模型配置从所填端点拉取可用模型列表（兼连通性测试）。
+ * Key 以 POST body 上送本地后端（不落入 URL/日志）；后端约定不抛 5xx，
+ * 失败时返回 { ok:false, error, models:[] } 让 UI 优雅退回手输。
+ * 任何网络/解析异常本函数兜底为 { ok:false, models:[], error }。
+ */
+export async function fetchLLMModels(
+  cfg: LLMOverride,
+): Promise<{ ok: boolean; models: string[]; error?: string }> {
+  try {
+    const res = await apiFetch('/api/llm/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) {
+      return { ok: false, models: [], error: await extractError(res) }
+    }
+    const data = (await res.json()) as { ok?: unknown; models?: unknown; error?: unknown }
+    return {
+      ok: !!data.ok,
+      models: Array.isArray(data.models) ? (data.models as string[]) : [],
+      error: data.error as string | undefined,
+    }
+  } catch (e) {
+    return { ok: false, models: [], error: String(e) }
+  }
+}
+
 // ===================================================================
 //  测试 JD 库（可保存/编辑/删除的 JD，复用到多次分析）
 // ===================================================================
@@ -284,6 +314,8 @@ export async function streamChat(
     reasoning_effort?: ReasoningEffort
     /** 本地可读时间字符串，用于让 AI 知道“现在”，避免检索旧年份信息 */
     client_time?: string
+    /** 按会话覆盖的自定义大模型配置（六字段全空时由调用方传 undefined） */
+    llm_override?: LLMOverride
   },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
@@ -511,22 +543,34 @@ export async function judgeFeynman(
   taskId: number,
   content: string,
   today?: string,
+  reasoningEffort?: ReasoningEffort,
 ): Promise<MasteryJudgeOut> {
   const res = await apiFetch('/api/mastery/feynman', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // 默认带本地自然日，命中缺口回灌时把任务拉到「今天」（同 F1 口径）；调用方可覆盖
-    body: JSON.stringify({ task_id: taskId, content, today: today ?? localTodayIso() }),
+    body: JSON.stringify({
+      task_id: taskId,
+      content,
+      today: today ?? localTodayIso(),
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    }),
   })
   return handle<MasteryJudgeOut>(res)
 }
 
 /** 出题模式第一步：为某 learn 任务生成 2-3 道题（available=false 时引导手动标记）。 */
-export async function generateQuiz(taskId: number): Promise<QuizGenerateOut> {
+export async function generateQuiz(
+  taskId: number,
+  reasoningEffort?: ReasoningEffort,
+): Promise<QuizGenerateOut> {
   const res = await apiFetch('/api/mastery/quiz/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({
+      task_id: taskId,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    }),
   })
   return handle<QuizGenerateOut>(res)
 }
@@ -537,11 +581,18 @@ export async function judgeQuiz(
   questions: MasteryQuestion[],
   answers: string[],
   today?: string,
+  reasoningEffort?: ReasoningEffort,
 ): Promise<MasteryJudgeOut> {
   const res = await apiFetch('/api/mastery/quiz/judge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId, questions, answers, today: today ?? localTodayIso() }),
+    body: JSON.stringify({
+      task_id: taskId,
+      questions,
+      answers,
+      today: today ?? localTodayIso(),
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    }),
   })
   return handle<MasteryJudgeOut>(res)
 }

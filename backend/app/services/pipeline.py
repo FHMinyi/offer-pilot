@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import concurrent.futures as cf
+import contextvars
 from collections.abc import Iterator
 
 from . import gap_analysis, jd_parser, llm, optimizer, resume_parser, roadmap
@@ -62,8 +63,17 @@ def _parse_inputs_streaming(
         yield ("status", (f"正在并行解析简历与 {n} 条 JD…" if n else "正在解析简历…"))
 
     with cf.ThreadPoolExecutor(max_workers=min(6, 1 + n)) as ex:
-        resume_future = None if reuse_resume else ex.submit(resume_parser.parse_resume, resume_text)
-        jd_futures = {ex.submit(jd_parser.parse_jd, t): i for i, t in enumerate(jd_texts)}
+        # 每个 submit 用独立的上下文副本运行：contextvars 不会自动传到子线程，
+        # 且同一 Context 不能被多线程并发 run，故各自 copy_context()，让 LLM 覆盖在解析阶段也生效
+        resume_future = (
+            None
+            if reuse_resume
+            else ex.submit(contextvars.copy_context().run, resume_parser.parse_resume, resume_text)
+        )
+        jd_futures = {
+            ex.submit(contextvars.copy_context().run, jd_parser.parse_jd, t): i
+            for i, t in enumerate(jd_texts)
+        }
         parsed_jds: list[dict] = [None] * n  # type: ignore[list-item]
         done = 0
         for fut in cf.as_completed(jd_futures):

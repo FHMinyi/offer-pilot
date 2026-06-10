@@ -137,6 +137,17 @@ class ChatContextIn(BaseModel):
     persona: str = Field("default", description="人设键（B5 预留 coach/senior/butler）")
 
 
+class LLMOverrideIn(BaseModel):
+    """前端按会话自定义大语言模型（BYO LLM）：字段全部可选，空串=未设、回退服务端 .env。"""
+
+    provider: str = ""        # openai / anthropic / ""(=用服务端)
+    model: str = ""           # 默认档（对话/优化/面经/费曼/出题/判定）
+    model_resume: str = ""    # 简历解析档（选填，空=回退默认/服务端）
+    model_jd: str = ""        # JD 解析档（选填，空=回退默认/服务端）
+    base_url: str = ""
+    api_key: str = ""
+
+
 class ChatRequest(BaseModel):
     messages: list[ChatMessageIn] = Field(default_factory=list, description="对话历史")
     context: ChatContextIn = Field(default_factory=ChatContextIn, description="已收集的简历/JD/设置")
@@ -144,6 +155,8 @@ class ChatRequest(BaseModel):
     reasoning_effort: str = "medium"
     # 前端传入的当前本地时间（让 AI 知道“现在”，避免检索过时年份）
     client_time: str = ""
+    # 前端自定义大语言模型（BYO LLM）：按本次请求覆盖服务端 .env，空=用服务端
+    llm_override: LLMOverrideIn | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -414,12 +427,16 @@ class FeynmanJudgeRequest(BaseModel):
     content: str = Field(..., min_length=1, description="用户的费曼复述原文")
     # 命中缺口回灌时把任务 planned_date 拉到这一天（同 F1 口径）
     today: DateField | None = None
+    # 判定类可选推理强度 off/low/medium/high/xhigh/max
+    reasoning_effort: str = "medium"
 
 
 class QuizGenerateRequest(BaseModel):
     """出题模式第一步：为某 learn 任务生成 2-3 道题。"""
 
     task_id: int
+    # 判定类可选推理强度 off/low/medium/high/xhigh/max
+    reasoning_effort: str = "medium"
 
 
 class QuizGenerateOut(BaseModel):
@@ -435,6 +452,8 @@ class QuizJudgeRequest(BaseModel):
     questions: list[QuizQuestion] = Field(default_factory=list)
     answers: list[str] = Field(default_factory=list)
     today: DateField | None = None
+    # 判定类可选推理强度 off/low/medium/high/xhigh/max
+    reasoning_effort: str = "medium"
 
 
 class MasterTaskRequest(BaseModel):

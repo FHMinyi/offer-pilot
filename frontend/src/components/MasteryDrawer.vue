@@ -4,7 +4,14 @@
 // AI 当教练不当法官：用户对「我已掌握」始终有最终决定权；AI 不可用（available=false）
 // 时不卡死，弱化输入/反馈区并突出「我已掌握 ⭐」手动标记。判定一次性返回（非流式）。
 import { computed, ref, watch } from 'vue'
-import type { BlindSpot, MasteryJudgeOut, MasteryMode, MasteryQuestion, Task } from '../types'
+import type {
+  BlindSpot,
+  MasteryJudgeOut,
+  MasteryMode,
+  MasteryQuestion,
+  ReasoningEffort,
+  Task,
+} from '../types'
 import { generateQuiz, judgeFeynman, judgeQuiz, masterTask } from '../api/client'
 import { localTodayIso } from '../shared/journey'
 
@@ -54,6 +61,36 @@ const result = ref<MasteryJudgeOut | null>(null)
 // AI 是否可用：从最近一次判定/出题回包读取；未判定前视为可用（true）。
 const aiAvailable = ref(true)
 
+// ---------- 判定推理强度（💭思考）----------
+// 6 档复用 ChatView effortOptions 标签；随判定/出题请求透传 reasoning_effort。
+// 跨会话偏好，持久化 localStorage（仿 ChatView tone 容错范式，隐私模式忽略失败）。
+const effortOptions: { value: ReasoningEffort; label: string }[] = [
+  { value: 'off', label: '关闭' },
+  { value: 'low', label: '低 low' },
+  { value: 'medium', label: '中 medium' },
+  { value: 'high', label: '高 high' },
+  { value: 'xhigh', label: '极高 xhigh' },
+  { value: 'max', label: '最高 max' },
+]
+
+const MASTERY_EFFORT_KEY = 'op.mastery-effort'
+function readEffort(): ReasoningEffort {
+  try {
+    const v = localStorage.getItem(MASTERY_EFFORT_KEY)
+    return effortOptions.some((o) => o.value === v) ? (v as ReasoningEffort) : 'medium'
+  } catch {
+    return 'medium'
+  }
+}
+const masteryEffort = ref<ReasoningEffort>(readEffort())
+watch(masteryEffort, (v) => {
+  try {
+    localStorage.setItem(MASTERY_EFFORT_KEY, v)
+  } catch {
+    /* 隐私模式：忽略持久化失败 */
+  }
+})
+
 const open = computed(() => props.task !== null)
 
 // 当前 verdict 的展示元数据（空串=不显示评级徽章）
@@ -97,7 +134,7 @@ async function loadQuiz(): Promise<void> {
   loadingQuiz.value = true
   localError.value = ''
   try {
-    const out = await generateQuiz(props.task.id)
+    const out = await generateQuiz(props.task.id, masteryEffort.value)
     questions.value = out.questions
     answers.value = out.questions.map(() => '')
     quizLoaded.value = true
@@ -126,7 +163,7 @@ async function submitFeynman(): Promise<void> {
   judging.value = true
   localError.value = ''
   try {
-    const out = await judgeFeynman(props.task.id, text, localTodayIso())
+    const out = await judgeFeynman(props.task.id, text, localTodayIso(), masteryEffort.value)
     applyJudge(out)
   } catch (err) {
     localError.value = err instanceof Error ? err.message : '判定失败，请重试'
@@ -140,7 +177,13 @@ async function submitQuiz(): Promise<void> {
   judging.value = true
   localError.value = ''
   try {
-    const out = await judgeQuiz(props.task.id, questions.value, answers.value, localTodayIso())
+    const out = await judgeQuiz(
+      props.task.id,
+      questions.value,
+      answers.value,
+      localTodayIso(),
+      masteryEffort.value,
+    )
     applyJudge(out)
   } catch (err) {
     localError.value = err instanceof Error ? err.message : '判定失败，请重试'
@@ -221,6 +264,21 @@ function onOverlayClick(e: MouseEvent): void {
             >
               ❓ 考考我
             </button>
+          </div>
+
+          <!-- 思考强度（💭）：随判定/出题透传 reasoning_effort，对支持推理的模型生效 -->
+          <div class="mastery__effort">
+            <label class="mastery__effort-label" for="mastery-effort">💭 思考</label>
+            <select
+              id="mastery-effort"
+              v-model="masteryEffort"
+              class="field mastery__effort-select"
+              :disabled="judging || loadingQuiz"
+            >
+              <option v-for="opt in effortOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
           </div>
 
           <!-- AI 降级提示（任一判定/出题返回 available=false 时） -->
@@ -452,6 +510,26 @@ function onOverlayClick(e: MouseEvent): void {
   background: var(--surface);
   color: var(--brand);
   box-shadow: var(--shadow-sm);
+}
+
+/* ---------- 思考强度（💭） ---------- */
+.mastery__effort {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mastery__effort-label {
+  flex-shrink: 0;
+  font-size: 0.84rem;
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.mastery__effort-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84rem;
 }
 
 /* ---------- 降级提示 ---------- */

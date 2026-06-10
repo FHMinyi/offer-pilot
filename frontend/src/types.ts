@@ -137,6 +137,19 @@ export interface ChatMessage {
   content: string
 }
 
+/**
+ * 前端自定义大语言模型覆盖（BYO LLM）：按会话覆盖服务端 .env 的 provider/端点/模型。
+ * 六字段均为 string，留空＝回退服务端配置；api_key 仅存浏览器 localStorage、随请求发给本地后端、不入库。
+ */
+export interface LLMOverride {
+  provider: string // openai / anthropic / ''(=用服务端)
+  base_url: string // 自定义端点，留空＝官方/服务端
+  api_key: string // API Key，仅存本地浏览器
+  model: string // 默认档（对话/优化/面经/费曼/出题/判定 6 处）
+  model_resume: string // 简历解析档（选填，空＝回退默认/服务端）
+  model_jd: string // JD 解析档（选填，空＝回退默认/服务端）
+}
+
 /** 对话上下文：随消息一并提交给后端的简历/JD/目标岗位等信息 */
 export interface ChatContext {
   resume_text?: string // 已上传/粘贴的简历全文

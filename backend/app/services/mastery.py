@@ -144,7 +144,7 @@ def _parse_judgement(data: dict) -> dict:
     }
 
 
-def judge_feynman(content: str, task: Task) -> dict:
+def judge_feynman(content: str, task: Task, effort: str = "medium") -> dict:
     """费曼复述判定。返回 {verdict, passed, feedback, followup_questions, gaps, engine, available}。"""
     content = (content or "").strip()
     if not content:
@@ -157,7 +157,7 @@ def judge_feynman(content: str, task: Task) -> dict:
         f"{_JUDGE_JSON_SPEC}"
     )
     try:
-        data = complete_json(system, f"用户的复述：\n{content}")
+        data = complete_json(system, f"用户的复述：\n{content}", effort=effort)
     except LLMUnavailable:
         return _degraded()
     except Exception:  # noqa: BLE001 LLM 路径任何意外都降级，绝不打穿到 500
@@ -166,7 +166,7 @@ def judge_feynman(content: str, task: Task) -> dict:
     return _parse_judgement(data)
 
 
-def generate_quiz(task: Task) -> dict:
+def generate_quiz(task: Task, effort: str = "medium") -> dict:
     """出题（quiz 第一步）。返回 {questions:[{q,hint}], available}。"""
     system = (
         "你是出题教练。针对下面这个学习任务，出 2-3 道能检验真实掌握度的题"
@@ -175,7 +175,7 @@ def generate_quiz(task: Task) -> dict:
         f"学习任务：{task.title}（技能方向：{_skill_label(task)}）"
     )
     try:
-        data = complete_json(system, "请出题。")
+        data = complete_json(system, "请出题。", effort=effort)
     except LLMUnavailable:
         return {"questions": [], "available": False}
     except Exception:  # noqa: BLE001
@@ -196,7 +196,9 @@ def generate_quiz(task: Task) -> dict:
     return {"questions": questions, "available": True}
 
 
-def judge_quiz(questions: list[dict] | None, answers: list[str] | None, task: Task) -> dict:
+def judge_quiz(
+    questions: list[dict] | None, answers: list[str] | None, task: Task, effort: str = "medium"
+) -> dict:
     """判分（quiz 第二步）。与 judge_feynman 在 verdict 之后完全合流（同一回灌/存档/回包）。"""
     answers = answers or []
     qa_lines: list[str] = []
@@ -213,7 +215,7 @@ def judge_quiz(questions: list[dict] | None, answers: list[str] | None, task: Ta
         f"{_JUDGE_JSON_SPEC}"
     )
     try:
-        data = complete_json(system, "用户的答题：\n" + "\n\n".join(qa_lines))
+        data = complete_json(system, "用户的答题：\n" + "\n\n".join(qa_lines), effort=effort)
     except LLMUnavailable:
         return _degraded()
     except Exception:  # noqa: BLE001

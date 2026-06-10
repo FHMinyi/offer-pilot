@@ -29,6 +29,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import {
   createSavedJd,
+  fetchLLMModels,
   getConversation,
   saveConversation,
   streamChat,
@@ -55,6 +56,8 @@ import {
   openReportSignal,
   isWide,
 } from '../shared/appState'
+// 自定义大语言模型（BYO LLM）：全局配置单例 + 生效覆盖（localStorage 持久化见 llmConfig.ts）
+import { llmConfig, effectiveOverride } from '../shared/llmConfig'
 
 // ---------- 助手消息的有序 block 模型 ----------
 // 一个助手回合由若干有序 block 组成，渲染严格按数组顺序输出。
@@ -462,6 +465,36 @@ function toggleSettings(): void {
   settingsOpen.value = !settingsOpen.value
 }
 
+// —— 模型设置（自定义大语言模型 BYO LLM）开合与拉取态 ——
+// 面板里直接 v-model 绑 llmConfig（全局单例，localStorage 持久化由 llmConfig.ts 负责）。
+const modelSettingsOpen = ref(false)
+// 从所填端点拉取到的可用模型列表（供三档输入框的 datalist 下拉；拉不到时仍可手输）。
+const modelList = ref<string[]>([])
+// 拉取状态机与状态文案。
+const modelFetchState = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
+const modelFetchMsg = ref('')
+// Provider 协议选项（与后端 _eff_provider 的两类客户端对应）。
+const providerOptions = [
+  { value: 'openai', label: 'OpenAI 协议' },
+  { value: 'anthropic', label: 'Anthropic 协议' },
+]
+function toggleModelSettings(): void {
+  modelSettingsOpen.value = !modelSettingsOpen.value
+}
+// 刷新模型列表（顺带是连通性测试）：成功填 modelList，失败仍允许手输。
+async function refreshModels(): Promise<void> {
+  modelFetchState.value = 'loading'
+  const res = await fetchLLMModels(llmConfig.value)
+  if (res.ok) {
+    modelList.value = res.models
+    modelFetchState.value = 'ok'
+    modelFetchMsg.value = `已连接，${res.models.length} 个模型`
+  } else {
+    modelFetchState.value = 'error'
+    modelFetchMsg.value = res.error || '拉取失败，可手输'
+  }
+}
+
 // ---------- PDF 上传 ----------
 const uploading = ref(false)
 
@@ -728,6 +761,8 @@ async function runChat(
       messages: requestMessages,
       context: snapshotContext(),
       reasoning_effort: turnEffort,
+      // 自定义大语言模型覆盖（六字段全空则为 undefined，回退后端 .env）。
+      llm_override: effectiveOverride(),
       // 当前本地时间（可读字符串）——让 AI 知道“现在”，避免检索旧年份信息。
       client_time: new Date().toLocaleString('zh-CN', { hour12: false }),
     },
@@ -1706,6 +1741,100 @@ onUnmounted(() => {
           </label>
         </div>
 
+        <!-- 模型设置（自定义大语言模型 BYO LLM）：按会话覆盖后端 .env，配置仅存本地浏览器 -->
+        <div v-if="modelSettingsOpen" class="panel settings-panel settings-panel--model">
+          <label class="settings-panel__field settings-panel__field--provider">
+            <span class="settings-panel__label">协议</span>
+            <select v-model="llmConfig.provider" class="field">
+              <option v-for="opt in providerOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </label>
+          <label class="settings-panel__field">
+            <span class="settings-panel__label">接入点 Base URL</span>
+            <input
+              v-model="llmConfig.base_url"
+              class="field"
+              type="text"
+              placeholder="留空=官方，如 https://api.deepseek.com/v1"
+              autocomplete="off"
+            />
+          </label>
+          <label class="settings-panel__field settings-panel__field--full">
+            <span class="settings-panel__label">API Key</span>
+            <input
+              v-model="llmConfig.api_key"
+              class="field"
+              type="password"
+              placeholder="仅存本地浏览器，可留空"
+              autocomplete="off"
+            />
+            <span class="settings-panel__hint">仅存本地浏览器，不会写入会话记录</span>
+          </label>
+          <label class="settings-panel__field">
+            <span class="settings-panel__label">默认模型</span>
+            <input
+              v-model="llmConfig.model"
+              class="field"
+              type="text"
+              list="op-model-list"
+              placeholder="如 deepseek-v4-pro"
+              autocomplete="off"
+            />
+          </label>
+          <label class="settings-panel__field">
+            <span class="settings-panel__label">简历模型</span>
+            <input
+              v-model="llmConfig.model_resume"
+              class="field"
+              type="text"
+              list="op-model-list"
+              placeholder="留空＝用默认模型"
+              autocomplete="off"
+            />
+          </label>
+          <label class="settings-panel__field">
+            <span class="settings-panel__label">JD 模型</span>
+            <input
+              v-model="llmConfig.model_jd"
+              class="field"
+              type="text"
+              list="op-model-list"
+              placeholder="留空＝用默认模型"
+              autocomplete="off"
+            />
+          </label>
+          <!-- 三档输入框共享的模型候选列表（原生「下拉 + 手输」二合一） -->
+          <datalist id="op-model-list">
+            <option v-for="m in modelList" :key="m" :value="m" />
+          </datalist>
+          <!-- 刷新模型列表（顺带连通性测试）+ 状态提示 -->
+          <div class="settings-panel__field settings-panel__field--full model-refresh">
+            <button
+              type="button"
+              class="tool-btn"
+              :disabled="modelFetchState === 'loading'"
+              @click="refreshModels"
+            >
+              <span aria-hidden="true">↻</span>
+              刷新模型列表
+            </button>
+            <span
+              v-if="modelFetchState === 'loading'"
+              class="model-refresh__status"
+            >拉取中…</span>
+            <span
+              v-else-if="modelFetchState === 'ok'"
+              class="model-refresh__status model-refresh__status--ok"
+            >✓ {{ modelFetchMsg }}</span>
+            <span
+              v-else-if="modelFetchState === 'error'"
+              class="model-refresh__status model-refresh__status--error"
+            >✗ {{ modelFetchMsg }}（仍可手输）</span>
+          </div>
+        </div>
+
         </template>
 
         <!-- 主输入行：附件按钮 + 输入框 + 发送/停止（折叠态也保留这一行） -->
@@ -1803,6 +1932,19 @@ onUnmounted(() => {
           >
             <span aria-hidden="true">⚙</span>
             分析设置
+          </button>
+
+          <!-- 模型设置：自定义大语言模型（provider / base_url / API Key / 三档模型） -->
+          <button
+            type="button"
+            class="tool-btn"
+            :class="{ 'tool-btn--on': modelSettingsOpen }"
+            :aria-expanded="modelSettingsOpen"
+            :disabled="streaming"
+            @click="toggleModelSettings"
+          >
+            <span aria-hidden="true">🧠</span>
+            模型
           </button>
 
           <!-- 思考强度选择器：随对话以 reasoning_effort 提交（6 档关键词标签） -->
@@ -3069,6 +3211,43 @@ onUnmounted(() => {
 
 .settings-panel .field {
   background: var(--surface);
+}
+
+/* 模型设置面板：与「分析设置」同一栅格，但字段更多，整行铺满者占满宽度 */
+.settings-panel__field--provider {
+  flex: 0 0 160px;
+  min-width: 160px;
+}
+
+.settings-panel__field--full {
+  flex: 1 1 100%;
+  min-width: 100%;
+}
+
+/* API Key 下方的隐私小字 */
+.settings-panel__hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* 刷新模型列表行：按钮 + 状态文案同一行 */
+.model-refresh {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.model-refresh__status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.model-refresh__status--ok {
+  color: var(--brand);
+}
+
+.model-refresh__status--error {
+  color: var(--danger);
 }
 
 /* ---------- 工具按钮（盒内工具行内） ---------- */

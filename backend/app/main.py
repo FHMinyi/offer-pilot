@@ -19,6 +19,7 @@ from .routers import (
     interviews,
     jobs,
     journey,
+    llm,
     mastery,
     progress,
     resumes,
@@ -78,6 +79,7 @@ app.include_router(journey.router)
 app.include_router(progress.router)
 app.include_router(interviews.router)
 app.include_router(mastery.router)
+app.include_router(llm.router)
 
 
 @app.get("/api/health", tags=["meta"])
