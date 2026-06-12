@@ -43,10 +43,10 @@ import type {
   WeekItem,
 } from '../types'
 import JdLibrary from '../components/JdLibrary.vue'
-import MarkdownText from '../components/MarkdownText.vue'
 import ScoreRing from '../components/ui/ScoreRing.vue'
-// 工具名协议（单一来源）：toolIcon 供模板按工具名取图标。
-import { toolIcon } from '../shared/chatTools'
+// 共享助手气泡渲染器：blocks / 错误条 / 无思考提示 / usage 小字 / 打字动效
+// 全部由它渲染（与回放页 ConversationView 共用同一套）。
+import AssistantBlocks from '../components/chat/AssistantBlocks.vue'
 // 对话回合视图模型 + 纯函数（类型与序列化/投影/定位逻辑均移至 chatModel.ts）。
 import {
   addUsage,
@@ -58,8 +58,6 @@ import {
   findPendingTool,
   findToolById,
   fmtTokens,
-  hasBubble,
-  isSafeUrl,
   serializeTurns,
   snapshotChatContext,
   toPayloadMessages,
@@ -974,27 +972,8 @@ watch(input, () => {
 // ===================================================================
 //  渲染辅助
 // ===================================================================
-// 切换某个思考块的展开/收起。
-function toggleReasoning(a: AssistantTurn, idx: number): void {
-  a.reasoningOpen[idx] = !a.reasoningOpen[idx]
-}
-
-// 切换某个 web_search 工具块「搜索结果」的展开/收起（默认折叠）。
-function toggleSearchResults(block: AssistantBlock): void {
-  if (block.kind === 'tool') block.resultsOpen = !block.resultsOpen
-}
-
-// 末块是否为「进行中的工具块」（它自身已有 spinner + 过程日志，无需再叠加打字动效）。
-function lastBlockIsRunningTool(a: AssistantTurn): boolean {
-  const last = a.blocks[a.blocks.length - 1]
-  return !!last && last.kind === 'tool' && last.ok === undefined
-}
-
-// 是否显示「工作中」动效：流式期间，且当前没有正在转的工具块时常驻。
-// 这样在「模型已输出文字、但仍在后台生成工具调用参数」等空窗期也有动效，避免看起来卡死。
-function showWorking(a: AssistantTurn): boolean {
-  return a.streaming && !lastBlockIsRunningTool(a)
-}
+// blocks 级渲染辅助（折叠切换 / spinner 判定等）已随气泡渲染移入
+// components/chat/AssistantBlocks.vue，此处只剩报告面板的视线引导。
 
 // 点击消息流里的报告引用 chip：让右侧（或窄屏下方）报告面板滚到顶并短暂高亮，
 // 帮助用户把视线引导到报告所在处。报告面板仅展示「最新」一份，故此处不按具体 block 定位。
@@ -1096,206 +1075,38 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 助手气泡（左）。显式判定 role 以便类型在该分支内收窄为助手消息 -->
+          <!-- 助手气泡（左）。显式判定 role 以便类型在该分支内收窄为助手消息。
+               气泡内部（blocks / 错误条 / 无思考提示 / usage 小字 / 打字动效）由
+               共享渲染器 AssistantBlocks 负责；报告块经 #report 插槽以紧凑
+               引用 chip 呈现（chip 样式与点击定位逻辑留在本视图）。 -->
           <div v-else-if="turn.role === 'assistant'" class="msg msg--assistant">
             <div class="avatar avatar--assistant" aria-hidden="true">OP</div>
             <div class="msg__assistant-body">
-              <!-- 气泡：按 blocks 顺序交错渲染「思考 / 文本 / 工具」；报告在气泡外全宽渲染 -->
-              <div v-if="hasBubble(turn)" class="bubble bubble--assistant">
-                <!-- 有序 blocks：渲染顺序即真实发生顺序 -->
-                <template v-for="(block, bi) in turn.blocks" :key="bi">
-                  <!-- 思考过程：可折叠、弱化、markdown -->
-                  <section
-                    v-if="block.kind === 'reasoning'"
-                    class="reasoning"
-                    :class="{ 'reasoning--open': turn.reasoningOpen[bi] }"
-                  >
-                    <button
-                      type="button"
-                      class="reasoning__head"
-                      :aria-expanded="!!turn.reasoningOpen[bi]"
-                      @click="toggleReasoning(turn, bi)"
-                    >
-                      <span class="reasoning__icon" aria-hidden="true">💭</span>
-                      <span class="reasoning__title">思考过程</span>
-                      <span
-                        class="reasoning__caret"
-                        :class="{ open: turn.reasoningOpen[bi] }"
-                        aria-hidden="true"
-                      >▸</span>
-                    </button>
-                    <div v-show="turn.reasoningOpen[bi]" class="reasoning__body">
-                      <MarkdownText :text="block.text" />
-                    </div>
-                  </section>
-
-                  <!-- 普通回复：markdown -->
-                  <MarkdownText
-                    v-else-if="block.kind === 'text'"
-                    class="bubble__md"
-                    :text="block.text"
-                  />
-
-                  <!-- 工具活动：标题行（图标 + 结果摘要 + 完成态标记）+ 过程日志列表。
-                       过程日志逐条累积；进行中时最后一行带 spinner，完成后保留全部日志。 -->
-                  <div
-                    v-else-if="block.kind === 'tool'"
-                    class="tool"
-                    :class="{
-                      'tool--done': block.ok === true,
-                      'tool--fail': block.ok === false,
-                      'tool--running': block.ok === undefined,
-                    }"
-                  >
-                    <div class="tool__head">
-                      <span class="tool__icon" aria-hidden="true">
-                        {{ toolIcon(block.name) }}
-                      </span>
-                      <span class="tool__label">{{ block.label }}</span>
-                      <span class="tool__state">
-                        <!-- 进行中且尚无过程日志：标题行兜底 spinner（有日志时 spinner 移至末行） -->
-                        <span
-                          v-if="block.ok === undefined && !(block.steps && block.steps.length)"
-                          class="tool__spinner"
-                          aria-hidden="true"
-                        />
-                        <span v-else-if="block.ok === true" class="tool__check">✓</span>
-                        <span v-else-if="block.ok === false" class="tool__cross">✕</span>
-                      </span>
-                    </div>
-                    <!-- 过程日志：每行小字、弱化，缩进于标题行之下；进行中末行带 spinner -->
-                    <ul
-                      v-if="block.steps && block.steps.length"
-                      class="tool__steps"
-                    >
-                      <li
-                        v-for="(step, si) in block.steps"
-                        :key="si"
-                        class="tool__step"
-                        :class="{
-                          'tool__step--active':
-                            block.ok === undefined &&
-                            si === (block.steps?.length ?? 0) - 1,
-                        }"
-                      >
-                        <span
-                          v-if="
-                            block.ok === undefined &&
-                            si === (block.steps?.length ?? 0) - 1
-                          "
-                          class="tool__step-spinner"
-                          aria-hidden="true"
-                        />
-                        <span v-else class="tool__step-dot" aria-hidden="true">·</span>
-                        <span class="tool__step-text">{{ step }}</span>
-                      </li>
-                    </ul>
-
-                    <!-- 联网搜索结果：默认折叠，点击展开（标题链接 + 摘要） -->
-                    <div
-                      v-if="
-                        block.name === 'web_search' &&
-                        block.results &&
-                        block.results.length
-                      "
-                      class="search"
-                    >
-                      <button
-                        type="button"
-                        class="search__toggle"
-                        :aria-expanded="!!block.resultsOpen"
-                        @click="toggleSearchResults(block)"
-                      >
-                        <span
-                          class="search__caret"
-                          :class="{ open: block.resultsOpen }"
-                          aria-hidden="true"
-                        >▸</span>
-                        搜索结果 {{ block.results.length }} 条<template v-if="block.query">
-                          · “{{ block.query }}”</template>
-                      </button>
-                      <ul v-show="block.resultsOpen" class="search__list">
-                        <li
-                          v-for="(r, ri) in block.results"
-                          :key="ri"
-                          class="search__item"
-                        >
-                          <a
-                            v-if="isSafeUrl(r.url)"
-                            class="search__link"
-                            :href="r.url"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >{{ r.title || r.url }}</a>
-                          <span v-else class="search__link search__link--plain">
-                            {{ r.title || '（无标题）' }}
-                          </span>
-                          <p v-if="r.snippet" class="search__snippet">{{ r.snippet }}</p>
-                        </li>
-                      </ul>
-                    </div>
-                  </div>
-                </template>
-
-                <!-- 工作中动效：流式期间常驻（无正在转的工具块时），覆盖文字已出但仍在后台
-                     生成工具参数等空窗期，避免看起来卡死 -->
-                <div
-                  v-if="showWorking(turn)"
-                  class="typing"
-                  aria-label="处理中"
-                >
-                  <span /><span /><span />
-                </div>
-
-                <!-- 错误条 + 重试 -->
-                <div v-if="turn.error" class="err" role="alert">
-                  <span class="err__text">{{ turn.error }}</span>
+              <AssistantBlocks
+                :turn="turn"
+                :live="turn.streaming === true"
+                :readonly="false"
+                :retry-disabled="streaming"
+                @retry="retry(turn)"
+              >
+                <!-- 报告引用 chip：报告改在右侧面板展示，消息流里仅留紧凑引用。
+                     点击让报告面板滚到顶并短暂高亮。窄屏文案改「见下方报告面板」。 -->
+                <template #report>
                   <button
                     type="button"
-                    class="btn err__retry"
-                    :disabled="streaming"
-                    @click="retry(turn)"
+                    class="report-chip"
+                    title="跳转到报告面板"
+                    @click="focusReportPanel"
                   >
-                    重试
+                    <span class="report-chip__icon" aria-hidden="true">📊</span>
+                    <span class="report-chip__text">
+                      匹配报告已生成 ·
+                      <span class="report-chip__where report-chip__where--wide">见右侧面板</span>
+                      <span class="report-chip__where report-chip__where--narrow">见下方报告面板</span>
+                    </span>
                   </button>
-                </div>
-
-                <!-- 无思考提示：本轮请求了思考但模型未输出思考过程时的弱化小字 -->
-                <p v-if="turn.noThinking" class="no-thinking">
-                  （当前模型本轮未输出思考过程）
-                </p>
-
-                <!-- 本轮 token 用量小字：输入(命中+未命中)（缓存命中）· 输出。
-                     口径与统计页一致：input_hit/input_miss/output，数字 k 缩写。 -->
-                <p
-                  v-if="turn.usage"
-                  class="usage-line"
-                  :title="`本轮 token：输入 ${turn.usage.input_hit + turn.usage.input_miss}（缓存命中 ${turn.usage.input_hit}）· 输出 ${turn.usage.output}`"
-                >
-                  📊 输入 {{ fmtTokens(turn.usage.input_hit + turn.usage.input_miss) }}（缓存
-                  {{ fmtTokens(turn.usage.input_hit) }}）· 输出
-                  {{ fmtTokens(turn.usage.output) }}
-                </p>
-              </div>
-
-              <!-- 报告引用 chip：报告改在右侧面板展示，消息流里仅留紧凑引用。
-                   点击让报告面板滚到顶并短暂高亮。窄屏文案改「见下方报告面板」。 -->
-              <template v-for="(block, bi) in turn.blocks" :key="`r-${bi}`">
-                <button
-                  v-if="block.kind === 'report'"
-                  type="button"
-                  class="report-chip"
-                  title="跳转到报告面板"
-                  @click="focusReportPanel"
-                >
-                  <span class="report-chip__icon" aria-hidden="true">📊</span>
-                  <span class="report-chip__text">
-                    匹配报告已生成 ·
-                    <span class="report-chip__where report-chip__where--wide">见右侧面板</span>
-                    <span class="report-chip__where report-chip__where--narrow">见下方报告面板</span>
-                  </span>
-                </button>
-              </template>
+                </template>
+              </AssistantBlocks>
             </div>
           </div>
         </template>
@@ -2104,7 +1915,7 @@ onUnmounted(() => {
   border-radius: 50%;
   background: var(--brand);
   border: 2px solid var(--surface);
-  animation: chat-pulse 1.4s ease-in-out infinite;
+  animation: op-pulse 1.4s ease-in-out infinite;
 }
 
 /* ---------- 消息滚动区 ---------- */
@@ -2208,41 +2019,10 @@ onUnmounted(() => {
   box-shadow: var(--shadow-sm);
 }
 
-/* ---------- 气泡 ---------- */
-.bubble {
-  position: relative;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  line-height: 1.65;
-  font-size: 0.95rem;
-  word-break: break-word;
-  box-shadow: var(--shadow-sm);
-}
-
-.bubble--user {
-  background: var(--brand);
-  color: var(--text-on-brand);
-  border-bottom-right-radius: var(--radius-sm);
-  max-width: min(78%, 640px);
-  white-space: pre-wrap; /* 保留用户输入的换行 */
-}
-
-.bubble--assistant {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-bottom-left-radius: var(--radius-sm);
-  max-width: min(88%, 760px);
-  /* 块之间留间距：思考 / 文本 / 工具按顺序纵向排列 */
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-/* markdown 回复块：去掉 MarkdownText 自身的外边距塌陷影响，由父级 gap 控制间距 */
-.bubble__md {
-  color: var(--text);
-}
+/* ---------- 气泡 ----------
+   .bubble / .bubble--user / .bubble--assistant 基础类已上移到
+   styles/main.css 全局（欢迎语与 AssistantBlocks 多根组件共用）；
+   此处只留本视图私有的欢迎语变体。 */
 
 /* 欢迎语 */
 .welcome {
@@ -2263,257 +2043,8 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
-/* ---------- 思考过程（可折叠、弱化） ---------- */
-.reasoning {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--surface-muted);
-}
-
-.reasoning__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: 6px 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: left;
-}
-
-.reasoning__head:hover {
-  color: var(--text-secondary);
-}
-
-.reasoning__icon {
-  font-size: 0.9em;
-}
-
-.reasoning__title {
-  flex: 1;
-}
-
-.reasoning__caret {
-  flex-shrink: 0;
-  font-size: 0.7rem;
-  transition: transform var(--transition);
-}
-
-.reasoning__caret.open {
-  transform: rotate(90deg);
-}
-
-.reasoning__body {
-  padding: 0 10px 8px;
-  /* 思考内容整体弱化：浅色、小字，与正式回复区分 */
-  color: var(--text-muted);
-  font-size: 0.86rem;
-}
-
-/* 缩小思考区内 markdown 的字号，进一步弱化 */
-.reasoning__body :deep(.md) {
-  font-size: 0.86rem;
-  color: var(--text-muted);
-}
-
-.reasoning__body :deep(.md) strong,
-.reasoning__body :deep(.md) h1,
-.reasoning__body :deep(.md) h2,
-.reasoning__body :deep(.md) h3 {
-  color: var(--text-secondary);
-}
-
-/* ---------- 工具活动（标题行 + 过程日志列表） ---------- */
-.tool {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 10px;
-  border-radius: var(--radius);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.tool--running {
-  border-color: var(--border-strong);
-}
-
-.tool--done {
-  background: var(--success-soft);
-  border-color: #bfe6cb;
-}
-
-.tool--fail {
-  background: var(--danger-soft);
-  border-color: #f6c9c9;
-}
-
-/* 标题行：图标 + 结果摘要 + 完成态标记 */
-.tool__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.tool__icon {
-  flex-shrink: 0;
-}
-
-.tool__label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool__state {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-}
-
-/* 过程日志列表：缩进于图标之下，每行小字、弱化 */
-.tool__steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  /* 缩进对齐到标题文字（图标约 1em + gap） */
-  padding-left: calc(1em + var(--space-2));
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.tool__step {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-/* 进行中的最后一行：略微强调，并轻微呼吸 */
-.tool__step--active {
-  color: var(--text-secondary);
-}
-
-.tool__step-dot {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  opacity: 0.7;
-}
-
-.tool__step-text {
-  min-width: 0;
-  word-break: break-word;
-}
-
-/* 末行进行中的小 spinner */
-.tool__step-spinner {
-  flex-shrink: 0;
-  align-self: center;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--brand);
-  border-radius: 50%;
-  animation: chat-spin 0.7s linear infinite;
-}
-
-.tool__check {
-  color: var(--success);
-  font-weight: 700;
-}
-
-.tool__cross {
-  color: var(--danger);
-  font-weight: 700;
-}
-
-.tool__spinner {
-  width: 13px;
-  height: 13px;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--brand);
-  border-radius: 50%;
-  animation: chat-spin 0.7s linear infinite;
-}
-
-/* ---------- 打字指示 ---------- */
-.typing {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 0;
-}
-
-.typing span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  opacity: 0.5;
-  animation: chat-bounce 1.2s infinite ease-in-out;
-}
-
-.typing span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.typing span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-/* ---------- 错误条 ---------- */
-.err {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-top: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
-  background: var(--danger-soft);
-  border: 1px solid #f6c9c9;
-}
-
-.err__text {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.88rem;
-  color: var(--danger);
-}
-
-.err__retry {
-  flex-shrink: 0;
-  padding: 5px 14px;
-  font-size: 0.85rem;
-}
-
-/* ---------- 无思考提示（很弱化的小字） ---------- */
-.no-thinking {
-  margin: 0;
-  font-size: 0.76rem;
-  color: var(--text-muted);
-  opacity: 0.7;
-  font-style: italic;
-}
-
-/* 本轮 token 用量小字：弱化、与气泡其余内容拉开一点距离 */
-.usage-line {
-  margin: 6px 0 0;
-  font-size: 0.74rem;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
-}
+/* 思考过程 / 工具活动 / 打字指示 / 错误条 / 无思考提示 / token 用量小字的
+   样式已随气泡渲染整体迁入 components/chat/AssistantBlocks.vue（scoped）。 */
 
 /* ---------- 报告引用 chip（消息流内，点击跳转右侧/下方报告面板） ---------- */
 .report-chip {
@@ -2763,7 +2294,7 @@ onUnmounted(() => {
   height: 8px;
   border-radius: 50%;
   background: var(--brand);
-  animation: chat-pulse 1.4s ease-in-out infinite;
+  animation: op-pulse 1.4s ease-in-out infinite;
 }
 
 /* 操作反馈浮条 */
@@ -3064,7 +2595,7 @@ onUnmounted(() => {
   border: 2px solid var(--border-strong);
   border-top-color: var(--brand);
   border-radius: 50%;
-  animation: chat-spin 0.7s linear infinite;
+  animation: op-spin 0.7s linear infinite;
 }
 
 /* 思考强度选择器：与工具按钮同一视觉语言（ghost） */
@@ -3248,125 +2779,19 @@ onUnmounted(() => {
   border: 0;
 }
 
-/* ---------- 动画 ---------- */
-@keyframes chat-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes chat-bounce {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.5;
-  }
-  30% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
-@keyframes chat-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.4;
-    transform: scale(0.8);
-  }
-}
-
+/* ---------- 动画 ----------
+   keyframes 已重命名 op-spin / op-bounce / op-pulse 并上移到 styles/main.css
+   全局（scoped 会给动画名加 hash，跨组件按名引用会静默失效）。
+   降级：用户偏好减少动效时，本视图残留的动效元素全部静止
+   （气泡内动效的降级在 AssistantBlocks.vue 内各自处理）。 */
 @media (prefers-reduced-motion: reduce) {
-  .tool__spinner,
-  .tool__step-spinner,
   .tool-btn__spinner {
     animation: none;
   }
-  .typing span,
   .status-bar__dot,
   .to-bottom__dot {
     animation: none;
   }
-}
-
-/* ---------- 联网搜索结果（工具块内，默认折叠） ---------- */
-.search {
-  margin-top: 4px;
-  padding-left: calc(1em + var(--space-2)); /* 与过程日志同缩进 */
-}
-
-.search__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  color: var(--brand-active);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: left;
-}
-
-.search__toggle:hover {
-  color: var(--brand);
-}
-
-.search__caret {
-  font-size: 0.7rem;
-  transition: transform var(--transition);
-}
-
-.search__caret.open {
-  transform: rotate(90deg);
-}
-
-.search__list {
-  list-style: none;
-  margin: 6px 0 2px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.search__item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.search__link {
-  font-size: 0.84rem;
-  font-weight: 600;
-  color: var(--brand);
-  word-break: break-word;
-}
-
-.search__link--plain {
-  color: var(--text-secondary);
-}
-
-.search__snippet {
-  margin: 0;
-  font-size: 0.78rem;
-  line-height: 1.55;
-  color: var(--text-muted);
-  /* 摘要最多 3 行 */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* ---------- 侧栏：学习方案（主产出）+ 匹配度次级 ---------- */
@@ -3525,17 +2950,11 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   /* 注意：<960px 已切换为纵向堆叠（.chat 高度 auto、整页滚动），
-     故此处不再重置 .chat 固定高度，避免与堆叠布局冲突。 */
+     故此处不再重置 .chat 固定高度，避免与堆叠布局冲突。
+     气泡放宽（.bubble--user / .bubble--assistant）已随全局气泡样式
+     移入 styles/main.css 的同断点媒体查询。 */
   .composer__inner {
     padding: var(--space-3);
-  }
-
-  .bubble--user {
-    max-width: 86%;
-  }
-
-  .bubble--assistant {
-    max-width: 100%;
   }
 
   .entry__send {

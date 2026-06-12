@@ -345,3 +345,92 @@ kbd {
 .wrap {
   flex-wrap: wrap;
 }
+
+/* =========================================================
+   对话气泡（跨视图共享）
+   .bubble 基础类被 ChatView（欢迎语/用户气泡）与
+   components/chat/AssistantBlocks.vue（助手气泡）共用；后者是多根
+   fragment 组件，父级 scoped 样式命不中其根节点，故上移为全局。
+   各视图私有的气泡变体（如 .welcome）仍留在各自 scoped 样式内。
+   ========================================================= */
+.bubble {
+  position: relative;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  line-height: 1.65;
+  font-size: 0.95rem;
+  word-break: break-word;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 用户气泡：品牌色、右下角收角，保留输入换行 */
+.bubble--user {
+  background: var(--brand);
+  color: var(--text-on-brand);
+  border-bottom-right-radius: var(--radius-sm);
+  max-width: min(78%, 640px);
+  white-space: pre-wrap; /* 保留用户输入的换行 */
+}
+
+/* 助手气泡：白底描边、左下角收角；
+   块之间留间距：思考 / 文本 / 工具按顺序纵向排列 */
+.bubble--assistant {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-bottom-left-radius: var(--radius-sm);
+  max-width: min(88%, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 小屏：气泡放宽，充分利用可用宽度 */
+@media (max-width: 640px) {
+  .bubble--user {
+    max-width: 86%;
+  }
+
+  .bubble--assistant {
+    max-width: 100%;
+  }
+}
+
+/* ---------- 对话动效 keyframes（全局 op-* 命名） ----------
+   被多个组件（AssistantBlocks 的 spinner/打字三点、ChatView 的状态点等）
+   按名引用；scoped 样式会给动画名加 hash 导致跨组件引用静默失效，
+   故统一放在全局并冠以 op- 前缀。 */
+
+/* 旋转：各处加载 spinner */
+@keyframes op-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 弹跳：打字指示三点 */
+@keyframes op-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* 呼吸：状态提示小圆点 */
+@keyframes op-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
