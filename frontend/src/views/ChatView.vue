@@ -36,20 +36,35 @@ import {
   uploadResume,
 } from '../api/client'
 import type {
-  AnalysisResult,
   ChatContext,
   ChatMessage,
-  ChatPersistContext,
-  PersistedBlock,
-  PersistedTurn,
   ReasoningEffort,
-  SearchResultItem,
   TurnUsage,
   WeekItem,
 } from '../types'
 import JdLibrary from '../components/JdLibrary.vue'
 import MarkdownText from '../components/MarkdownText.vue'
 import ScoreRing from '../components/ui/ScoreRing.vue'
+// 工具名协议（单一来源）：toolIcon 供模板按工具名取图标。
+import { toolIcon } from '../shared/chatTools'
+// 对话回合视图模型 + 纯函数（类型与序列化/投影/定位逻辑均移至 chatModel.ts）。
+import {
+  addUsage,
+  clearAnalysisToolStatus,
+  collapseAllReasoning,
+  deriveTitle,
+  deserializeTurns,
+  findLastReportBlock,
+  findPendingTool,
+  findToolById,
+  fmtTokens,
+  hasBubble,
+  isSafeUrl,
+  serializeTurns,
+  snapshotChatContext,
+  toPayloadMessages,
+} from '../shared/chatModel'
+import type { AssistantBlock, AssistantTurn, ChatTurn } from '../shared/chatModel'
 import {
   newChatSignal,
   notifyConversationsChanged,
@@ -59,57 +74,8 @@ import {
 } from '../shared/appState'
 // 自定义大语言模型（BYO LLM）：全局配置单例 + 生效覆盖（localStorage 持久化见 llmConfig.ts）
 import { llmConfig, effectiveOverride } from '../shared/llmConfig'
-
-// ---------- 助手消息的有序 block 模型 ----------
-// 一个助手回合由若干有序 block 组成，渲染严格按数组顺序输出。
-type AssistantBlock =
-  // 思考过程（markdown，默认折叠）
-  | { kind: 'reasoning'; text: string }
-  // 普通回复（markdown）
-  | { kind: 'text'; text: string }
-  // 工具活动；status=最后一条子步骤文案（仅进行中时有意义）；
-  // steps=累积的「分析过程日志」（每行一条，按到达顺序追加，完成后保留供回看）；
-  // query/results 仅 web_search：搜索关键词与结果列表；resultsOpen=结果折叠态（瞬态，不持久化）
-  | {
-      kind: 'tool'
-      id: string
-      name: string
-      label: string
-      ok?: boolean
-      status?: string
-      steps?: string[]
-      query?: string
-      results?: SearchResultItem[]
-      resultsOpen?: boolean
-    }
-  // 结构化报告卡
-  | { kind: 'report'; analysis_run_id: number; result: AnalysisResult }
-
-// ---------- 渲染用消息结构 ----------
-// 用户消息：仅文本。
-interface UserTurn {
-  role: 'user'
-  text: string
-}
-// 助手消息：有序 blocks + 可选错误 + 流式标记 + 折叠态。
-interface AssistantTurn {
-  role: 'assistant'
-  blocks: AssistantBlock[]
-  error?: string
-  streaming: boolean
-  // 触发本轮的对话历史快照（供「重试」复用，不含本占位消息）。
-  requestMessages?: ChatMessage[]
-  // 各 reasoning 块的展开态，按块在 blocks 中的下标索引。
-  // 流式期间默认展开、本轮结束后自动折叠；用户可手动点击切换。
-  reasoningOpen: Record<number, boolean>
-  // 发起本轮时所选的思考强度（用于结束时判断「应有思考却无思考」）。
-  effort?: ReasoningEffort
-  // 本轮结束后置位：发起时强度 !== 'off' 但模型未输出任何 reasoning 块。
-  noThinking?: boolean
-  // 本轮 token 用量（SSE usage 事件到达后置位）：气泡小字展示输入(命中)/输出。
-  usage?: TurnUsage
-}
-type ChatTurn = UserTurn | AssistantTurn
+// localStorage 持久化 ref 统一范式（读取容错 + watch 写回），见 usePersistedRef.ts
+import { usePersistedRef } from '../shared/usePersistedRef'
 
 // ---------- 核心状态 ----------
 // 对话消息列表（渲染源）。欢迎语为静态空状态，不入此列表，故不会回传后端。
@@ -145,22 +111,13 @@ const effortTip =
   '在多数 OpenAI 协议模型上“极高/最高”等同“高”。'
 
 // E3 人设引擎（B5：单人设 + 语气滑块）：语气强度 0=最温柔…100=最严格，随对话以 context.tone 提交。
-const TONE_KEY = 'op.tone'
-function readTone(): number {
-  try {
-    const v = Number(localStorage.getItem(TONE_KEY))
-    return Number.isFinite(v) && v >= 0 && v <= 100 ? v : 50
-  } catch {
-    return 50
-  }
-}
-const tone = ref<number>(readTone())
-watch(tone, (v) => {
-  try {
-    localStorage.setItem(TONE_KEY, String(v))
-  } catch {
-    /* 隐私模式：忽略持久化失败 */
-  }
+// 持久化 op.tone（数字字符串）：非数值/越界回退 50。
+const tone = usePersistedRef<number>('op.tone', () => 50, {
+  parse: (raw) => {
+    const v = Number(raw)
+    return Number.isFinite(v) && v >= 0 && v <= 100 ? v : undefined
+  },
+  serialize: String,
 })
 const toneLabel = computed(() => {
   const t = tone.value
@@ -186,7 +143,7 @@ function onToneWheel(e: WheelEvent): void {
 }
 
 // 高层阶段提示（onStatus 的兜底）——显示在输入区上方的细条。
-// 注意：run_analysis 运行期间的子步骤优先写入对应 tool 块的 status；
+// 注意：分析类工具（analyze_match / generate_plan）运行期间的子步骤优先写入对应 tool 块的 status；
 // 仅在找不到进行中的工具块时，才退化为这里的顶部细条。
 const statusLine = ref('')
 
@@ -207,22 +164,6 @@ const currentRunId = ref<number | null>(null)
 // 每轮 SSE usage 事件累加到此（input_hit/input_miss/output/total）；
 // 续聊加载历史会话时从各轮 usage 重算。供「全链路统一口径」展示本会话累计。
 const sessionUsage = ref<TurnUsage>({ input_hit: 0, input_miss: 0, output: 0, total: 0 })
-
-// 把一轮 usage 累加进累计值（纯函数，便于 reduce 重算历史）。
-function addUsage(acc: TurnUsage, e: TurnUsage): TurnUsage {
-  const input_hit = acc.input_hit + (e.input_hit || 0)
-  const input_miss = acc.input_miss + (e.input_miss || 0)
-  const output = acc.output + (e.output || 0)
-  return { input_hit, input_miss, output, total: input_hit + input_miss + output }
-}
-
-// token 数 k 缩写：<1000 原样；≥1000 显示「x.xk」（去掉多余 0）。
-function fmtTokens(n: number): string {
-  const v = Number.isFinite(n) ? n : 0
-  if (v < 1000) return String(v)
-  const k = v / 1000
-  return `${k >= 100 ? Math.round(k) : Number(k.toFixed(1))}k`
-}
 
 // 本会话累计是否有数据（决定是否展示累计小字）。
 const hasSessionUsage = computed(() => (sessionUsage.value.total ?? 0) > 0)
@@ -251,23 +192,9 @@ const hasAttachments = computed(
 const showWelcome = computed(() => turns.length === 0)
 
 // ---------- 报告侧边面板 ----------
-// 最新报告：遍历所有 turns，取「最后一个」report block（{analysis_run_id, result}）；无则 null。
+// 最新报告：遍历所有 turns，取「最后一个」report block；无则 null。
 // 右侧面板只展示这一份最新报告（历史报告在消息流里以紧凑引用 chip 呈现）。
-const latestReport = computed<{ analysis_run_id: number; result: AnalysisResult } | null>(
-  () => {
-    for (let ti = turns.length - 1; ti >= 0; ti--) {
-      const t = turns[ti]
-      if (t.role !== 'assistant') continue
-      for (let bi = t.blocks.length - 1; bi >= 0; bi--) {
-        const b = t.blocks[bi]
-        if (b.kind === 'report') {
-          return { analysis_run_id: b.analysis_run_id, result: b.result }
-        }
-      }
-    }
-    return null
-  },
-)
+const latestReport = computed(() => findLastReportBlock(turns))
 
 // 报告侧栏开合：默认展开。隐藏后右栏消失、聊天区占满宽度，
 // 并在角落显示「📊 报告」悬浮角标供重新展开。
@@ -665,63 +592,6 @@ function onComposerFocusOut(): void {
 //  发送与流式处理
 // ===================================================================
 
-// 把一条助手消息的所有 text 块拼接为发给后端的纯文本（忽略思考/工具/报告）。
-function assistantPlainText(t: AssistantTurn): string {
-  return t.blocks
-    .filter((b): b is Extract<AssistantBlock, { kind: 'text' }> => b.kind === 'text')
-    .map((b) => b.text)
-    .join('')
-}
-
-// 把渲染用消息投影为发给后端的 { role, content }。
-// user 取其文本；assistant 取所有 text 块拼接。
-function toPayloadMessages(list: ChatTurn[]): ChatMessage[] {
-  return list.map((t) =>
-    t.role === 'user'
-      ? { role: 'user', content: t.text }
-      : { role: 'assistant', content: assistantPlainText(t) },
-  )
-}
-
-// 当前 context 的纯净快照（去掉空字段，避免回传无意义数据）。
-function snapshotContext(): ChatContext {
-  const ctx: ChatContext = { weeks: context.weeks ?? 4 }
-  if (context.resume_text && context.resume_text.trim()) {
-    ctx.resume_text = context.resume_text
-  }
-  if (context.jd_texts && context.jd_texts.length) {
-    ctx.jd_texts = [...context.jd_texts]
-  }
-  if (context.target_role && context.target_role.trim()) {
-    ctx.target_role = context.target_role.trim()
-  }
-  if (currentRunId.value != null) {
-    ctx.analysis_run_id = currentRunId.value
-  }
-  ctx.tone = tone.value // E3：随对话提交语气强度
-  return ctx
-}
-
-// 当前 context 的「可持久化快照」（随会话存盘，供历史续聊恢复上下文）。
-// 与 snapshotContext 同步：去掉空字段，analysis_run_id 取 currentRunId。
-function snapshotPersistContext(): ChatPersistContext {
-  const ctx: ChatPersistContext = { weeks: context.weeks ?? 4 }
-  if (context.resume_text && context.resume_text.trim()) {
-    ctx.resume_text = context.resume_text
-  }
-  if (context.jd_texts && context.jd_texts.length) {
-    ctx.jd_texts = [...context.jd_texts]
-  }
-  if (context.target_role && context.target_role.trim()) {
-    ctx.target_role = context.target_role.trim()
-  }
-  if (currentRunId.value != null) {
-    ctx.analysis_run_id = currentRunId.value
-  }
-  ctx.tone = tone.value // E3：语气强度随会话存盘，续聊恢复
-  return ctx
-}
-
 // 点击发送：组装用户消息与助手占位，发起流式对话。
 async function send(): Promise<void> {
   if (streaming.value) return
@@ -786,7 +656,7 @@ async function runChat(
   await streamChat(
     {
       messages: requestMessages,
-      context: snapshotContext(),
+      context: snapshotChatContext(context, currentRunId.value, tone.value),
       reasoning_effort: turnEffort,
       // 自定义大语言模型覆盖（六字段全空则为 undefined，回退后端 .env）。
       llm_override: effectiveOverride(),
@@ -865,7 +735,7 @@ async function runChat(
           t.results = e.results
         }
       },
-      // 结构化报告 → 追加报告块，并把对应 run_analysis 工具块的 status 清空
+      // 结构化报告 → 追加报告块，并把对应分析类工具块的 status 清空
       onReport: (e) => {
         clearAnalysisToolStatus(assistant)
         // 记录最近一次匹配分析 id，供第二步 generate_plan 跨轮使用
@@ -921,111 +791,6 @@ async function runChat(
 //  会话自动保存
 // ===================================================================
 
-// 把渲染用 turns 序列化为可持久化子集（丢弃 streaming / reasoningOpen /
-// requestMessages / effort 等瞬态字段；assistant 仅留 blocks/noThinking/error，
-// user 仅留 text）。block 结构与 AssistantBlock / PersistedBlock 严格一致。
-function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
-  return list.map((t): PersistedTurn => {
-    if (t.role === 'user') {
-      return { role: 'user', text: t.text }
-    }
-    const blocks: PersistedBlock[] = t.blocks.map((b) => {
-      switch (b.kind) {
-        case 'text':
-          return { kind: 'text', text: b.text }
-        case 'reasoning':
-          return { kind: 'reasoning', text: b.text }
-        case 'tool':
-          return {
-            kind: 'tool',
-            id: b.id,
-            name: b.name,
-            label: b.label,
-            ok: b.ok,
-            status: b.status,
-            steps: b.steps,
-            query: b.query,
-            results: b.results,
-          }
-        case 'report':
-          return {
-            kind: 'report',
-            analysis_run_id: b.analysis_run_id,
-            result: b.result,
-          }
-      }
-    })
-    const turn: PersistedTurn = { role: 'assistant', blocks }
-    if (t.noThinking) turn.noThinking = true
-    if (t.error) turn.error = t.error
-    if (t.usage) turn.usage = t.usage // 本轮 token 用量随会话存盘
-    return turn
-  })
-}
-
-// 把持久化的 PersistedTurn[] 反序列化为内部渲染用 ChatTurn[]。
-// user → { role, text }；assistant → { role, blocks, noThinking, error, streaming:false, reasoningOpen:{} }。
-// blocks 结构与 PersistedBlock / AssistantBlock 一致，逐块映射即可无损还原。
-function deserializeTurns(list: PersistedTurn[]): ChatTurn[] {
-  return list.map((t): ChatTurn => {
-    if (t.role === 'user') {
-      return { role: 'user', text: t.text }
-    }
-    const blocks: AssistantBlock[] = t.blocks.map((b) => {
-      switch (b.kind) {
-        case 'text':
-          return { kind: 'text', text: b.text }
-        case 'reasoning':
-          return { kind: 'reasoning', text: b.text }
-        case 'tool':
-          return {
-            kind: 'tool',
-            id: b.id,
-            name: b.name,
-            label: b.label,
-            ok: b.ok,
-            status: b.status,
-            steps: b.steps,
-            query: b.query,
-            results: b.results,
-            // 搜索结果折叠态为瞬态：还原时统一以收起态呈现（默认折叠）
-            resultsOpen: false,
-          }
-        case 'report':
-          return {
-            kind: 'report',
-            analysis_run_id: b.analysis_run_id,
-            result: b.result,
-          }
-      }
-    })
-    return {
-      role: 'assistant',
-      blocks,
-      error: t.error,
-      streaming: false,
-      // 历史回合不保留瞬态的展开态，统一以收起态还原（用户可手动展开回看）
-      reasoningOpen: {},
-      noThinking: t.noThinking,
-      usage: t.usage, // 还原本轮 token 用量（气泡小字 + 会话累计重算）
-    }
-  })
-}
-
-// 从持久化 turns 中取「最后一个 report 块」的 analysis_run_id（没有则 null）。
-// 供续聊时恢复 currentRunId，让第二步 generate_plan 仍能跨轮定位本次匹配分析。
-function lastRunIdFromTurns(list: PersistedTurn[]): number | null {
-  for (let ti = list.length - 1; ti >= 0; ti--) {
-    const t = list[ti]
-    if (t.role !== 'assistant') continue
-    for (let bi = t.blocks.length - 1; bi >= 0; bi--) {
-      const b = t.blocks[bi]
-      if (b.kind === 'report') return b.analysis_run_id
-    }
-  }
-  return null
-}
-
 // 加载某段已存会话用于「续聊」：拉取详情 → 反序列化 turns → 恢复 context 与
 // conversationId / currentRunId → 滚到底部。失败给出错误提示并回退为新对话。
 // 注意：加载期间置位 loadingConversation，避免清空动作把会话洗成空白后被误保存。
@@ -1057,7 +822,8 @@ async function loadConversation(id: number): Promise<void> {
     conversationId.value = detail.id
     // 恢复最近一次匹配分析 id：优先取 turns 中最后一个 report 块，
     // 兜底回退到持久化 context.analysis_run_id（两者通常一致）。
-    currentRunId.value = lastRunIdFromTurns(detail.turns) ?? ctx.analysis_run_id ?? null
+    currentRunId.value =
+      findLastReportBlock(detail.turns)?.analysis_run_id ?? ctx.analysis_run_id ?? null
     // 进入续聊：滚到底部，用户可直接继续对话
     atBottom.value = true
     hasUnreadBelow.value = false
@@ -1092,14 +858,6 @@ watch(
   { immediate: true },
 )
 
-// 取首条 user 文本截断到约 30 字作为标题；无则「未命名对话」。
-function deriveTitle(list: ChatTurn[]): string {
-  const firstUser = list.find((t): t is UserTurn => t.role === 'user')
-  const text = firstUser?.text.trim() ?? ''
-  if (!text) return '未命名对话'
-  return text.length > 30 ? `${text.slice(0, 30)}…` : text
-}
-
 // upsert 当前会话：需至少 1 条 user 消息；用返回 id 回填 conversationId。
 // 失败仅 console 警告，不打扰用户。
 async function persistConversation(): Promise<void> {
@@ -1112,7 +870,7 @@ async function persistConversation(): Promise<void> {
       title: deriveTitle(turns),
       turns: serializeTurns(turns),
       // 随会话存盘当前上下文快照，供「历史续聊」恢复简历/JD/目标岗位/周数/分析 id
-      context: snapshotPersistContext(),
+      context: snapshotChatContext(context, currentRunId.value, tone.value),
     })
     conversationId.value = saved.id
     // 通知左侧栏刷新「最近会话」列表（新会话/新标题即时出现）
@@ -1145,46 +903,6 @@ watch(newChatSignal, () => {
   // 历史会话加载中不重置，避免与加载中态竞争
   if (!loadingConversation.value) newConversation()
 })
-
-// 找「最近一个未完成（ok===undefined）的工具块」。
-function findPendingTool(
-  a: AssistantTurn,
-): Extract<AssistantBlock, { kind: 'tool' }> | undefined {
-  for (let i = a.blocks.length - 1; i >= 0; i--) {
-    const b = a.blocks[i]
-    if (b.kind === 'tool' && b.ok === undefined) return b
-  }
-  return undefined
-}
-
-// 按 id 找工具块。
-function findToolById(
-  a: AssistantTurn,
-  id: string,
-): Extract<AssistantBlock, { kind: 'tool' }> | undefined {
-  for (const b of a.blocks) {
-    if (b.kind === 'tool' && b.id === id) return b
-  }
-  return undefined
-}
-
-// 报告到达时，清空对应 run_analysis 工具块仍残留的子步骤文案。
-function clearAnalysisToolStatus(a: AssistantTurn): void {
-  for (let i = a.blocks.length - 1; i >= 0; i--) {
-    const b = a.blocks[i]
-    if (b.kind === 'tool' && isAnalysisTool(b.name)) {
-      b.status = undefined
-      return
-    }
-  }
-}
-
-// 本轮结束后折叠所有思考块。
-function collapseAllReasoning(a: AssistantTurn): void {
-  a.blocks.forEach((b, idx) => {
-    if (b.kind === 'reasoning') a.reasoningOpen[idx] = false
-  })
-}
 
 // 流式中点击「停止」：中止当前请求。
 function stop(): void {
@@ -1256,18 +974,6 @@ watch(input, () => {
 // ===================================================================
 //  渲染辅助
 // ===================================================================
-// 是否为「运行分析」类工具（决定是否展示子步骤进度文案）。
-function isAnalysisTool(name: string): boolean {
-  return name === 'run_analysis' || name === 'analysis' || name === 'analyze'
-}
-
-// 依据工具名给一个图标；默认放大镜。
-function toolIcon(name: string): string {
-  if (name === 'web_search') return '🔍'
-  if (isAnalysisTool(name)) return '📊'
-  return '🛠'
-}
-
 // 切换某个思考块的展开/收起。
 function toggleReasoning(a: AssistantTurn, idx: number): void {
   a.reasoningOpen[idx] = !a.reasoningOpen[idx]
@@ -1276,18 +982,6 @@ function toggleReasoning(a: AssistantTurn, idx: number): void {
 // 切换某个 web_search 工具块「搜索结果」的展开/收起（默认折叠）。
 function toggleSearchResults(block: AssistantBlock): void {
   if (block.kind === 'tool') block.resultsOpen = !block.resultsOpen
-}
-
-// 校验搜索结果链接协议：仅放行 http/https，挡掉 javascript:/data: 等危险协议，
-// 防止脏数据或中间人注入可执行链接（搜索结果来自外部 Tavily，需视为不可信）。
-function isSafeUrl(url: unknown): boolean {
-  if (typeof url !== 'string' || !url) return false
-  try {
-    const p = new URL(url)
-    return p.protocol === 'http:' || p.protocol === 'https:'
-  } catch {
-    return false
-  }
 }
 
 // 末块是否为「进行中的工具块」（它自身已有 spinner + 过程日志，无需再叠加打字动效）。
@@ -1300,14 +994,6 @@ function lastBlockIsRunningTool(a: AssistantTurn): boolean {
 // 这样在「模型已输出文字、但仍在后台生成工具调用参数」等空窗期也有动效，避免看起来卡死。
 function showWorking(a: AssistantTurn): boolean {
   return a.streaming && !lastBlockIsRunningTool(a)
-}
-
-// 是否需要渲染气泡容器：有任意 block（非报告）、流式中、出错、或有「无思考」提示。
-// 报告块改在右侧面板展示（消息流里仅留引用 chip），故气泡是否出现只看
-// 「非报告 block / 流式 / 错误 / 无思考提示」。
-function hasBubble(a: AssistantTurn): boolean {
-  if (a.streaming || a.error || a.noThinking || a.usage) return true
-  return a.blocks.some((b) => b.kind !== 'report')
 }
 
 // 点击消息流里的报告引用 chip：让右侧（或窄屏下方）报告面板滚到顶并短暂高亮，

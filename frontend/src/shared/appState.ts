@@ -7,25 +7,23 @@
 
 import { reactive, ref } from 'vue'
 import type { ProgressSummary } from '../types'
+import { usePersistedRef } from './usePersistedRef'
 
-const COLLAPSE_KEY = 'op.sidebar.collapsed'
-
-/** 读取持久化的折叠态（SSR/隐私模式下 localStorage 可能不可用，做容错）。 */
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
+/**
+ * 侧栏折叠态：宽屏下是否收成「窄图标栏」。
+ * 持久化 op.sidebar.collapsed（'1'/'0' 编码），读取容错（SSR/隐私模式回退展开）。
+ */
+export const sidebarCollapsed = usePersistedRef<boolean>('op.sidebar.collapsed', () => false, {
+  parse: (raw) => raw === '1',
+  serialize: (v) => (v ? '1' : '0'),
+})
 
 /**
  * 侧边栏状态：
- * - collapsed：宽屏下是否收成「窄图标栏」（持久化）。
  * - mobileOpen：窄屏下抽屉是否展开（不持久化，切换路由/点遮罩即关）。
+ * （折叠态见上方 sidebarCollapsed，独立 ref 以接入 usePersistedRef。）
  */
 export const sidebarState = reactive({
-  collapsed: readCollapsed(),
   mobileOpen: false,
 })
 
@@ -45,14 +43,9 @@ try {
   /* 非浏览器环境/不支持 matchMedia：保持默认 true */
 }
 
-/** 宽屏：折叠 / 展开侧栏（持久化）。 */
+/** 宽屏：折叠 / 展开侧栏（持久化由 usePersistedRef 的 watch 自动写回）。 */
 export function toggleSidebarCollapsed(): void {
-  sidebarState.collapsed = !sidebarState.collapsed
-  try {
-    localStorage.setItem(COLLAPSE_KEY, sidebarState.collapsed ? '1' : '0')
-  } catch {
-    /* 忽略持久化失败 */
-  }
+  sidebarCollapsed.value = !sidebarCollapsed.value
 }
 
 /** 窄屏：打开抽屉。 */

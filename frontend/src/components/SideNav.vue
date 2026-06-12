@@ -3,7 +3,7 @@
 // 承载原顶栏的全部职能：品牌 Logo、新对话、最近会话列表、历史记录入口。
 //
 // 形态：
-//   · 宽屏：常驻左侧；可「折叠」成窄图标栏（sidebarState.collapsed，持久化）。
+//   · 宽屏：常驻左侧；可「折叠」成窄图标栏（sidebarCollapsed，持久化）。
 //   · 窄屏：化为抽屉，由 App.vue 控制滑入/滑出（sidebarState.mobileOpen）。
 //
 // 协同（见 shared/appState）：
@@ -14,7 +14,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getProgress, listConversations } from '../api/client'
 import type { ConversationSummary } from '../types'
 import {
-  sidebarState,
+  sidebarCollapsed,
   isWide,
   toggleSidebarCollapsed,
   closeMobileSidebar,
@@ -30,7 +30,7 @@ const route = useRoute()
 const router = useRouter()
 
 // 有效折叠：仅宽屏下「折叠成窄栏」生效；窄屏抽屉始终展示完整侧栏。
-const effectiveCollapsed = computed(() => sidebarState.collapsed && isWide.value)
+const effectiveCollapsed = computed(() => sidebarCollapsed.value && isWide.value)
 
 // 最近会话列表（按更新时间倒序，仅取前若干条；「全部」走历史页）。
 const conversations = ref<ConversationSummary[]>([])
@@ -144,11 +144,11 @@ function openReport(): void {
         v-if="isWide"
         type="button"
         class="collapse-btn"
-        :title="sidebarState.collapsed ? '展开侧栏' : '收起侧栏'"
-        :aria-label="sidebarState.collapsed ? '展开侧栏' : '收起侧栏'"
+        :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
         @click="toggleSidebarCollapsed"
       >
-        <span aria-hidden="true">{{ sidebarState.collapsed ? '»' : '«' }}</span>
+        <span aria-hidden="true">{{ sidebarCollapsed ? '»' : '«' }}</span>
       </button>
     </div>
 

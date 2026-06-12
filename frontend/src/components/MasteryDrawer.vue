@@ -14,6 +14,8 @@ import type {
 } from '../types'
 import { generateQuiz, judgeFeynman, judgeQuiz, masterTask } from '../api/client'
 import { localTodayIso } from '../shared/journey'
+// localStorage 持久化 ref 统一范式（读取容错 + watch 写回），见 usePersistedRef.ts
+import { usePersistedRef } from '../shared/usePersistedRef'
 
 const props = withDefaults(
   defineProps<{
@@ -63,7 +65,7 @@ const aiAvailable = ref(true)
 
 // ---------- 判定推理强度（💭思考）----------
 // 6 档复用 ChatView effortOptions 标签；随判定/出题请求透传 reasoning_effort。
-// 跨会话偏好，持久化 localStorage（仿 ChatView tone 容错范式，隐私模式忽略失败）。
+// 跨会话偏好，持久化 op.mastery-effort（裸枚举字符串，读取做枚举校验，非法值回退 medium）。
 const effortOptions: { value: ReasoningEffort; label: string }[] = [
   { value: 'off', label: '关闭' },
   { value: 'low', label: '低 low' },
@@ -73,22 +75,8 @@ const effortOptions: { value: ReasoningEffort; label: string }[] = [
   { value: 'max', label: '最高 max' },
 ]
 
-const MASTERY_EFFORT_KEY = 'op.mastery-effort'
-function readEffort(): ReasoningEffort {
-  try {
-    const v = localStorage.getItem(MASTERY_EFFORT_KEY)
-    return effortOptions.some((o) => o.value === v) ? (v as ReasoningEffort) : 'medium'
-  } catch {
-    return 'medium'
-  }
-}
-const masteryEffort = ref<ReasoningEffort>(readEffort())
-watch(masteryEffort, (v) => {
-  try {
-    localStorage.setItem(MASTERY_EFFORT_KEY, v)
-  } catch {
-    /* 隐私模式：忽略持久化失败 */
-  }
+const masteryEffort = usePersistedRef<ReasoningEffort>('op.mastery-effort', () => 'medium', {
+  parse: (raw) => (effortOptions.some((o) => o.value === raw) ? (raw as ReasoningEffort) : undefined),
 })
 
 const open = computed(() => props.task !== null)

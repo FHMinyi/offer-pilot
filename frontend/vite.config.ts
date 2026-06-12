@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -13,6 +14,11 @@ export default defineConfig({
       // 允许使用 @/ 指向 src 目录
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  // vitest 契约测试：被测对象均为纯 TS（sse 分帧/分派、chatModel 序列化），node 环境即可
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
   },
   server: {
     port: 8461,

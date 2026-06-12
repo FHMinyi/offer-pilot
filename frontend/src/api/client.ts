@@ -4,8 +4,6 @@
 
 import type {
   AnalysisRun,
-  AnalysisResult,
-  AnalysisSummary,
   ChatContext,
   ChatMessage,
   ChatPersistContext,
@@ -14,12 +12,9 @@ import type {
   ConversationDetail,
   ConversationSummary,
   InterviewCreate,
-  InterviewLog,
   InterviewReplay,
-  JourneyPatch,
   JourneyState,
   LLMOverride,
-  MasteryCheck,
   MasteryJudgeOut,
   MasteryQuestion,
   PersistedTurn,
@@ -30,11 +25,8 @@ import type {
   ReplanResult,
   ResumeOut,
   SavedJd,
-  SearchResultItem,
-  SkillGraph,
   Task,
   TaskPatch,
-  TurnUsage,
   UsageGranularity,
   UsageGroupBy,
   UsageSummary,
@@ -42,17 +34,10 @@ import type {
 } from '../types'
 import { deviceHeaders } from '../shared/device'
 import { localTodayIso } from '../shared/journey'
+import { dispatchSseFrame, processSseBuffer, type ChatStreamHandlers } from './sse'
 
-/** 分析请求体（内联模式或引用模式均可） */
-export interface RunAnalysisPayload {
-  resume_text?: string
-  jd_texts?: string[]
-  resume_id?: number
-  job_ids?: number[]
-  target_role?: string
-  weeks?: number
-  prefer_structured?: boolean
-}
+// SSE 回调类型定义已移至 sse.ts，此处 re-export 保持调用方导入路径不变
+export type { ChatStreamHandlers } from './sse'
 
 /**
  * 统一 fetch 包装：把设备归属头（X-Device-Id）合并进所有 /api 请求。
@@ -137,36 +122,10 @@ export async function uploadResume(file: File): Promise<ResumeOut> {
   return handle<ResumeOut>(res)
 }
 
-/**
- * 发起一次分析。
- * 内联模式传 { resume_text, jd_texts, target_role, weeks }；
- * 引用模式传 { resume_id, job_ids, ... }。
- */
-export async function runAnalysis(payload: RunAnalysisPayload): Promise<AnalysisRun> {
-  const res = await apiFetch('/api/analysis/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return handle<AnalysisRun>(res)
-}
-
-/** 获取历史分析列表（按时间倒序） */
-export async function listAnalyses(): Promise<AnalysisSummary[]> {
-  const res = await apiFetch('/api/analysis')
-  return handle<AnalysisSummary[]>(res)
-}
-
 /** 获取单次分析的完整记录 */
 export async function getAnalysis(id: number): Promise<AnalysisRun> {
   const res = await apiFetch(`/api/analysis/${id}`)
   return handle<AnalysisRun>(res)
-}
-
-/** 获取技能本体图谱 */
-export async function getSkillGraph(): Promise<SkillGraph> {
-  const res = await apiFetch('/api/skills/graph')
-  return handle<SkillGraph>(res)
 }
 
 /**
@@ -275,39 +234,12 @@ export async function getConversation(id: number): Promise<ConversationDetail> {
 }
 
 /**
- * 流式对话事件回调集合。
- * 与后端 SSE 事件类型一一对应；除 onError/onDone 外均可选。
- */
-export interface ChatStreamHandlers {
-  /** 高层阶段提示（如“正在联网检索岗位技能…”）；run_analysis 运行期间也会多次到达，用于子进度 */
-  onStatus?: (e: { phase: string; message: string }) => void
-  /** 模型“思考过程”增量文本（流式，建议折叠展示并以 markdown 渲染） */
-  onReasoning?: (e: { text: string }) => void
-  /** 助手回复增量文本（拼接显示） */
-  onDelta?: (e: { text: string }) => void
-  /** Agent 调用工具 */
-  onToolCall?: (e: { id: string; name: string; label: string }) => void
-  /** 工具返回（label 为简短结果摘要） */
-  onToolResult?: (e: { id: string; name: string; label: string; ok: boolean }) => void
-  /** 联网搜索结果详情（id 关联对应 web_search 工具块；前端折叠展示） */
-  onSearchResults?: (e: { id: string; query: string; results: SearchResultItem[] }) => void
-  /** 结构化分析报告（渲染为报告卡） */
-  onReport?: (e: { analysis_run_id: number; result: AnalysisResult }) => void
-  /** 本轮 token 用量（input_hit/input_miss/output/total）：气泡小字 + 会话累计 */
-  onUsage?: (e: TurnUsage) => void
-  /** 出错 */
-  onError?: (e: { message: string }) => void
-  /** 本轮结束 */
-  onDone?: () => void
-}
-
-/**
  * 发起一次流式对话，消费后端 SSE（text/event-stream）。
  *
- * 读取 response.body 的 ReadableStream，用 TextDecoder 累积文本，按空行(\n\n)
- * 分帧；逐帧解析 `event:` 与 `data:` 行，对 data 做 JSON.parse，按事件类型分派到
- * 对应回调。流正常结束调用 onDone；若响应非 2xx 或读取/解析异常，调用 onError
- * （错误信息尽量取后端返回）。被 AbortSignal 中止时安静结束（不报错）。
+ * 读取 response.body 的 ReadableStream，用 TextDecoder 累积文本，分帧与单帧
+ * 分派交给 sse.ts 的 processSseBuffer / dispatchSseFrame 纯函数。流正常结束调用
+ * onDone；若响应非 2xx 或读取/解析异常，调用 onError（错误信息尽量取后端返回）。
+ * 被 AbortSignal 中止时安静结束（不报错）。
  *
  * @param payload 对话历史与上下文
  * @param handlers 各类 SSE 事件的回调
@@ -332,77 +264,6 @@ export async function streamChat(
     signal?.aborted === true ||
     (err instanceof DOMException && err.name === 'AbortError') ||
     (err instanceof Error && err.name === 'AbortError')
-
-  // 解析单帧 SSE，提取 event 类型与 data 文本并分派
-  const dispatchFrame = (frame: string): void => {
-    let event = 'message' // SSE 默认事件名
-    const dataLines: string[] = []
-    for (const rawLine of frame.split('\n')) {
-      const line = rawLine.replace(/\r$/, '') // 兼容 \r\n
-      if (!line || line.startsWith(':')) continue // 空行或注释行
-      if (line.startsWith('event:')) {
-        event = line.slice('event:'.length).trim()
-      } else if (line.startsWith('data:')) {
-        // 去掉冒号后的单个前导空格（SSE 规范）
-        dataLines.push(line.slice('data:'.length).replace(/^ /, ''))
-      }
-    }
-    if (dataLines.length === 0) return
-    const dataText = dataLines.join('\n')
-
-    let data: unknown
-    try {
-      data = JSON.parse(dataText)
-    } catch {
-      // data 不是合法 JSON：仅 error 事件尝试以纯文本兜底，其余忽略
-      if (event === 'error') {
-        handlers.onError?.({ message: dataText || '对话流解析失败' })
-      }
-      return
-    }
-
-    switch (event) {
-      case 'status':
-        handlers.onStatus?.(data as { phase: string; message: string })
-        break
-      case 'reasoning':
-        handlers.onReasoning?.(data as { text: string })
-        break
-      case 'delta':
-        handlers.onDelta?.(data as { text: string })
-        break
-      case 'tool_call':
-        handlers.onToolCall?.(data as { id: string; name: string; label: string })
-        break
-      case 'tool_result':
-        handlers.onToolResult?.(
-          data as { id: string; name: string; label: string; ok: boolean },
-        )
-        break
-      case 'search_results':
-        handlers.onSearchResults?.(
-          data as { id: string; query: string; results: SearchResultItem[] },
-        )
-        break
-      case 'report':
-        handlers.onReport?.(
-          data as { analysis_run_id: number; result: AnalysisResult },
-        )
-        break
-      case 'usage':
-        handlers.onUsage?.(data as TurnUsage)
-        break
-      case 'error':
-        handlers.onError?.(data as { message: string })
-        break
-      case 'done':
-        handlers.onDone?.()
-        break
-      default:
-        // 未知事件类型：忽略，保持向前兼容
-        break
-    }
-  }
 
   try {
     const res = await apiFetch('/api/chat/stream', {
@@ -432,18 +293,12 @@ export async function streamChat(
       buffer += decoder.decode(value, { stream: true })
 
       // 以空行分隔的完整帧逐个取出；保留最后一段不完整数据于 buffer
-      let sep = buffer.indexOf('\n\n')
-      while (sep !== -1) {
-        const frame = buffer.slice(0, sep)
-        buffer = buffer.slice(sep + 2)
-        if (frame.trim()) dispatchFrame(frame)
-        sep = buffer.indexOf('\n\n')
-      }
+      buffer = processSseBuffer(buffer, (frame) => dispatchSseFrame(frame, handlers))
     }
 
     // 冲刷解码器并处理可能残留的最后一帧（无尾随空行的情况）
     buffer += decoder.decode()
-    if (buffer.trim()) dispatchFrame(buffer)
+    if (buffer.trim()) dispatchSseFrame(buffer, handlers)
   } catch (err) {
     if (isAborted(err)) return // 主动中止：安静结束
     const message = err instanceof Error ? err.message : '对话流连接失败'
@@ -498,16 +353,6 @@ export async function getJourney(): Promise<JourneyState | null> {
   return handle<JourneyState>(res)
 }
 
-/** 更新旅程（推进 stage / 改 target_role / 周数）。 */
-export async function patchJourney(id: number, patch: JourneyPatch): Promise<JourneyState> {
-  const res = await apiFetch(`/api/journey/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
-  return handle<JourneyState>(res)
-}
-
 /** 动态再规划：按完成情况顺延/重组剩余日程（settle=true 时结算降权）。 */
 export async function replanJourney(id: number, payload: ReplanRequest = {}): Promise<ReplanResult> {
   const res = await apiFetch(`/api/journey/${id}/replan`, {
@@ -527,12 +372,6 @@ export async function createInterview(payload: InterviewCreate): Promise<Intervi
     body: JSON.stringify({ today: localTodayIso(), ...payload }),
   })
   return handle<InterviewReplay>(res)
-}
-
-/** 面经复盘列表（按时间倒序）。 */
-export async function listInterviews(): Promise<InterviewLog[]> {
-  const res = await apiFetch('/api/interviews')
-  return handle<InterviewLog[]>(res)
 }
 
 /** 进度汇总（实时聚合 Task + 惰性 streak）。 */
@@ -615,12 +454,6 @@ export async function masterTask(taskId: number, today?: string): Promise<Task> 
     body: JSON.stringify({ today: today ?? localTodayIso() }),
   })
   return handle<Task>(res)
-}
-
-/** 判定记录列表（可回看，按时间倒序）。 */
-export async function listMasteryChecks(): Promise<MasteryCheck[]> {
-  const res = await apiFetch('/api/mastery')
-  return handle<MasteryCheck[]>(res)
 }
 
 // ===================================================================

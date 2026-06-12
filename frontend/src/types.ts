@@ -97,16 +97,6 @@ export interface AnalysisRun {
   created_at: string
 }
 
-/** 历史列表项（精简） */
-export interface AnalysisSummary {
-  id: number
-  target_role: string
-  match_score: number
-  engine: string
-  job_count: number
-  created_at: string
-}
-
 /** 已保存的 JD（测试 JD 库的一条记录，可复用到多次分析） */
 export interface SavedJd {
   id: number
@@ -114,12 +104,6 @@ export interface SavedJd {
   content: string
   created_at: string
   updated_at: string
-}
-
-/** 技能本体图谱 */
-export interface SkillGraph {
-  proficiency_levels: string[]
-  categories: { category: string; skills: { key: string; name: string }[] }[]
 }
 
 /** 简历解析/上传返回 */
@@ -159,14 +143,6 @@ export interface ChatContext {
   analysis_run_id?: number | null // 最近一次匹配分析 id，用于第二步生成学习计划跨轮定位
   tone?: number // E3 语气强度 0=最温柔…100=最严格（默认 50）
   persona?: string // E3 人设键（B5 预留三人设，默认 'default'）
-}
-
-/** 工具调用活动：用于在对话界面展示 Agent 的工具调用过程 */
-export interface ToolActivity {
-  id: string
-  name: string
-  label: string
-  ok?: boolean // 工具是否成功返回；未返回时为 undefined（进行中）
 }
 
 /** 单条联网搜索结果（web_search 工具产出，供前端折叠展示） */
@@ -231,16 +207,9 @@ export type PersistedTurn =
  * 会话持久化上下文：随会话一并存盘的简历/JD/目标岗位等信息，
  * 用于「历史续聊」时恢复上下文，让用户在原有基础上继续对话。
  * 字段与运行期 ChatContext 对齐（resume_text/jd_texts/target_role/weeks/analysis_run_id）。
+ * 两者七字段逐一同构，故直接取别名；若日后持久化形态与运行期分叉，再拆回独立接口。
  */
-export interface ChatPersistContext {
-  resume_text?: string // 已上传/粘贴的简历全文
-  jd_texts?: string[] // 已添加的 JD 原文列表
-  target_role?: string
-  weeks?: number // 1~12，默认 4
-  analysis_run_id?: number | null // 最近一次匹配分析 id
-  tone?: number // E3 语气强度（续聊恢复）
-  persona?: string // E3 人设键
-}
+export type ChatPersistContext = ChatContext
 
 /** 会话列表项（精简，按更新时间倒序） */
 export interface ConversationSummary {
@@ -354,14 +323,6 @@ export interface ReplanRequest {
 export interface ReplanResult {
   journey: JourneyState
   tasks: Task[]
-}
-
-/** PATCH /api/journey/{id} 请求体 */
-export interface JourneyPatch {
-  stage?: JourneyStage
-  target_role?: string
-  planned_weeks?: number
-  current_week?: number
 }
 
 /** 单周进度（聚合 Task） */
