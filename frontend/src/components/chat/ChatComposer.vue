@@ -383,7 +383,12 @@ defineExpose({ focusInput, flash: flashHint })
         {{ hint }}
       </div>
 
-      <!-- 展开区：附件 chips + 各展开面板（仅展开态渲染；折叠时只留下方输入行） -->
+      <!-- 展开区：附件 chips + 各展开面板（仅展开态渲染；折叠时只留下方输入行）。
+           外层 .composer__panels 为常驻容器（display: contents，不产生盒子）：
+           展开/收起时 DOM 插拔被限制在容器内部，保证下方 composer__row 在
+           composer__box 子节点列表中的位置稳定——否则 Vue 重排会把聚焦中的
+           输入行移出再插回 DOM，浏览器随之丢焦点，composer 永远无法展开。 -->
+      <div class="composer__panels">
       <template v-if="composerExpanded">
       <!-- 附件 chips 行 -->
       <div class="chips">
@@ -510,6 +515,8 @@ defineExpose({ focusInput, flash: flashHint })
       <!-- 模型设置面板：组件实例常驻（拉取状态跨开合留存），DOM 仅在
            「composer 展开 && 面板打开」时渲染——同拆分前 v-if 语义 -->
       <ModelSettingsPanel :open="composerExpanded && modelSettingsOpen" />
+      </div>
+      <!-- /展开区常驻容器 -->
 
       <!-- 主输入行：附件按钮 + 输入框 + 发送/停止（折叠态也保留这一行） -->
       <div class="composer__row">
@@ -730,6 +737,13 @@ defineExpose({ focusInput, flash: flashHint })
 }
 
 /* ---------- 主输入行（附件 + 输入框 + 发送） ---------- */
+/* 展开区常驻容器：display: contents 不产生盒子，子节点直接作为 composer__box 的
+   flex 项参与布局（gap/顺序与未包裹时完全一致）。容器本身只为稳定 DOM 结构存在
+   ——防止展开/收起重排把聚焦中的输入行移出 DOM 导致丢焦点（见 template 注释）。 */
+.composer__panels {
+  display: contents;
+}
+
 .composer__row {
   display: flex;
   align-items: flex-end;
