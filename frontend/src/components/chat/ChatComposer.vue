@@ -292,6 +292,21 @@ function onComposerFocusOut(): void {
     )
   }, 0)
 }
+// 盒内 mousedown 拦截：目标不是文本输入类控件时阻止默认的焦点转移。
+// 否则两类盒内点击会把焦点丢到 body、被上面的 focusout 判定误折叠：
+//   ① 点击 label/面板空白等不可聚焦区域（浏览器默认把焦点移走）；
+//   ② 点击后随即变 disabled 的按钮（如「刷新模型列表」进入 loading）——禁用元素无法持焦。
+// preventDefault 只拦焦点转移，click 仍正常触发；textarea/input/select 保持原生聚焦
+// （语气滑块拖动、下拉展开、粘贴框输入都不受影响）。
+function onBoxMousedown(event: MouseEvent): void {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('textarea, input, select, [contenteditable]')) return
+  event.preventDefault()
+  // 折叠态下点击盒内按钮（如附件 📎）：主动聚焦输入框以展开 composer，
+  // 与此前「按钮获焦触发 focusin 展开」的既有体验一致。
+  const box = composerBoxRef.value
+  if (box && !box.contains(document.activeElement)) textareaRef.value?.focus()
+}
 
 // ---------- 输入框：Enter 发送 / Shift+Enter 换行 + 自适应高度 ----------
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -352,6 +367,7 @@ defineExpose({ focusInput, flash: flashHint })
       }"
       @focusin="onComposerFocusIn"
       @focusout="onComposerFocusOut"
+      @mousedown="onBoxMousedown"
       @dragenter="onDragEnter"
       @dragover="onDragOver"
       @dragleave="onDragLeave"
