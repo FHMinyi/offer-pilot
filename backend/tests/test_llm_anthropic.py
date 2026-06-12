@@ -94,8 +94,40 @@ def test_messages_to_anthropic_merges_consecutive_same_role():
 def test_system_prompt_injects_time():
     ctx = {"resume_text": "", "jd_texts": [], "target_role": "前端实习", "weeks": 4}
     prompt = agent._system_prompt(ctx, client_time="2026-06-02 10:30:00 CST")
-    assert "2026-06-02 10:30:00 CST" in prompt
+    # 降粒度到小时（缓存评审 R1）：分秒归零，同一小时内提示词字节稳定
+    assert "2026-06-02 10:00 CST" in prompt
+    assert "10:30" not in prompt
     assert "当前时间" in prompt
     # 无传入时回退服务器时间（不为空）
     prompt2 = agent._system_prompt(ctx, client_time="")
     assert "当前时间" in prompt2
+
+
+def test_system_prompt_cache_friendly_layout():
+    """缓存评审 R1+R2：同小时不同分秒 → 提示词字节级一致；段序从稳到变。"""
+    ctx = {"resume_text": "张三的简历", "jd_texts": ["某 JD 全文"], "target_role": "前端", "weeks": 4, "tone": 50}
+    p1 = agent._system_prompt(ctx, client_time="2026/6/12 14:03:11")
+    p2 = agent._system_prompt(ctx, client_time="2026/6/12 14:58:59")
+    assert p1 == p2
+    # 易变项（语气、时间）必须位于材料段之后，前缀缓存才能保住材料大头
+    assert p1.index("【已附简历】") < p1.index("语气强度") < p1.index("当前时间")
+
+
+def test_anthropic_cache_breakpoints_add_and_strip():
+    kwargs = {
+        "system": "你是助手",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "你好"}]},
+        ],
+    }
+    llm._add_cache_breakpoints(kwargs)
+    # system 转 block 列表并带断点；最后一条消息的最后一个 block 带断点；其余不带
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert kwargs["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in kwargs["messages"][0]["content"][0]
+    # 兼容网关不认时可完整剥离还原
+    assert llm._strip_cache_breakpoints(kwargs) is True
+    assert kwargs["system"] == "你是助手"
+    assert "cache_control" not in kwargs["messages"][-1]["content"][-1]
+    assert llm._strip_cache_breakpoints(kwargs) is False

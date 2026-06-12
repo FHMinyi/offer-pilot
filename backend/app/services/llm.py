@@ -471,6 +471,35 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
     return ("\n\n".join(system_parts), conv)
 
 
+def _add_cache_breakpoints(kwargs: dict) -> None:
+    """给 anthropic 请求打提示词缓存断点（缓存评审 R3）。
+
+    anthropic 协议必须显式 cache_control 才会缓存，不打断点 = 0 命中、每轮全价。
+    两个断点：system 末尾（请求内 tools 在 system 之前，一并被该断点覆盖）+
+    最后一条消息的最后一个 content block（覆盖对话历史前缀）。
+    """
+    if isinstance(kwargs.get("system"), str):
+        kwargs["system"] = [
+            {"type": "text", "text": kwargs["system"], "cache_control": {"type": "ephemeral"}}
+        ]
+    conv = kwargs.get("messages") or []
+    if conv and isinstance(conv[-1].get("content"), list) and conv[-1]["content"]:
+        conv[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
+
+
+def _strip_cache_breakpoints(kwargs: dict) -> bool:
+    """剥掉缓存断点，返回是否有改动（兼容网关不认 cache_control 时去掉重试用）。"""
+    changed = False
+    if isinstance(kwargs.get("system"), list):
+        kwargs["system"] = "\n\n".join(b.get("text", "") for b in kwargs["system"])
+        changed = True
+    for m in kwargs.get("messages") or []:
+        for block in m.get("content") if isinstance(m.get("content"), list) else []:
+            if isinstance(block, dict) and block.pop("cache_control", None) is not None:
+                changed = True
+    return changed
+
+
 def anthropic_stream(messages: list[dict], tools: list[dict] | None = None, budget: int = 0):
     """anthropic 协议的 Agent 单步（非逐 token 流式，但产出同样的事件结构）。
 
@@ -499,8 +528,15 @@ def anthropic_stream(messages: list[dict], tools: list[dict] | None = None, budg
     if budget and budget > 0 and not has_tool_result:
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
         kwargs["max_tokens"] = max(4096, budget + 1024)
+    _add_cache_breakpoints(kwargs)
 
-    resp = client.messages.create(**kwargs)
+    try:
+        resp = client.messages.create(**kwargs)
+    except Exception:  # noqa: BLE001 部分兼容网关不认 cache_control，剥掉后重试
+        if _strip_cache_breakpoints(kwargs):
+            resp = client.messages.create(**kwargs)
+        else:
+            raise
     _safe_record(provider="anthropic", model=kwargs["model"], raw_usage=getattr(resp, "usage", None), streamed=True)
 
     content = ""

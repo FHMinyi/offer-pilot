@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -159,13 +160,21 @@ def _tone_directive(tone: int) -> str:
     )
 
 
+# 匹配 "HH:MM" / "HH:MM:SS"，用于把时间降粒度到小时
+_TIME_HMS = re.compile(r"\b(\d{1,2}):\d{2}(?::\d{2})?\b")
+
+
 def _now_str(client_time: str) -> str:
-    """优先用前端传入的本地时间，否则回退服务器时间。"""
+    """优先用前端传入的本地时间，否则回退服务器时间；统一降粒度到小时。
+
+    时间戳在系统提示内，秒级精度会让提示词每轮都变、前缀缓存必断；
+    小时粒度下同一小时内提示词字节稳定（见 docs/上下文系统设计与缓存评审 R1）。
+    """
     if client_time and client_time.strip():
-        return client_time.strip()
+        return _TIME_HMS.sub(lambda m: f"{m.group(1)}:00", client_time.strip())
     from datetime import datetime
 
-    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:00 %Z")
 
 
 def _system_prompt(context: dict, client_time: str = "") -> str:
@@ -213,11 +222,15 @@ def _system_prompt(context: dict, client_time: str = "") -> str:
         "（analysis_run_id 可省略，系统会用最近一次匹配分析；并传 weekly_hours / timeline_weeks / focus_skills / "
         "learning_style / weeks 等用户已给的偏好）生成个性化学习路线，随后简要说明计划思路与本周重点。"
         "不要为生成计划而重复调用 analyze_match。\n\n"
-        "风格：中文、简洁、具体、不说空话。\n"
-        f"{tone_directive}\n\n"
+        "风格：中文、简洁、具体、不说空话。\n\n"
+        # 段序按「从稳到变」排列以最大化前缀缓存命中（缓存评审 R2）：
+        # 静态指令 → 岗位/周数与材料（会话内基本稳定）→ 语气（用户偶尔调）→ 时间（每小时变）。
+        # 前缀缓存在第一处字节差异折断，易变项置尾可保住前面的大头。
+        f"目标岗位：{role}；学习路线周数：{weeks}。\n\n"
+        + "\n\n".join(material)
+        + f"\n\n{tone_directive}\n\n"
         f"当前时间：{now}。涉及“当前/最新/今年”等信息时以此为准；"
-        "联网检索时请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时的年份。\n\n"
-        f"目标岗位：{role}；学习路线周数：{weeks}。\n\n" + "\n\n".join(material)
+        "联网检索时请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时的年份。"
     )
 
 
