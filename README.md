@@ -93,13 +93,13 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 ./scripts/dev-backend.sh            # 默认 http://localhost:7968
 
 # 终端 2：前端（首次会自动 npm install）
-./scripts/dev-frontend.sh           # http://localhost:5173
+./scripts/dev-frontend.sh           # http://localhost:8461
 
 # 终端 3（可选）：播种一份「活」的演示数据，便于体验/录制
 ./scripts/seed-demo.sh              # 输出会打印可访问的 /plan/<id>
 ```
 
-打开 http://localhost:5173 ，在对话框粘贴简历与若干 JD、补充目标方向，AI 会流式产出报告与学习方案；
+打开 http://localhost:8461 ，在对话框粘贴简历与若干 JD、补充目标方向，AI 会流式产出报告与学习方案；
 点报告里的入口进入 **执行计划**（`/plan/:runId`）勾选任务、每日打卡，并在 **我的进度**
 （`/dashboard`）查看完成率与坚持天数。
 

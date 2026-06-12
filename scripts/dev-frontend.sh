@@ -20,5 +20,5 @@ if [ ! -d node_modules ]; then
   npm install --no-audit --no-fund
 fi
 
-echo "[frontend] 在 http://localhost:5173 启动"
+echo "[frontend] 在 http://localhost:8461 启动"
 exec npm run dev

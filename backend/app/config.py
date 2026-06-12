@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     search_proxy: str = ""
 
     # 允许跨域的前端地址，逗号分隔
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:8461,http://127.0.0.1:8461"
 
     model_config = SettingsConfigDict(
         env_file=".env",
