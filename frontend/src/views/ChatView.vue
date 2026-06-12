@@ -1,85 +1,64 @@
 <script setup lang="ts">
 // 对话式主界面（路由 /）——OfferPilot 的产品新门面。
 //
-// 职责概览：
+// 职责概览（拆分后本视图只保留「编排层」）：
 //   · 以聊天形式承载「上传简历 / 添加 JD / 设定目标岗位与周数 → 发起分析」全流程。
 //   · 用户气泡靠右、助手气泡靠左；助手回复以【有序 blocks】驱动渲染，
-//     严格按事件到达顺序交错展示「对话 → 工具 → 对话 → 报告」。
-//   · 布局为左右两栏：左栏=消息滚动区 + 底部「组合输入区」（composer）；
-//     右栏=报告侧边面板，sticky 展示【最新】一份匹配分析的【紧凑摘要】（环形匹配度 +
-//     目标岗位 + 简述 + 「查看完整报告」主按钮），不再内联整份 <AnalysisReport>；
+//     严格按事件到达顺序交错展示「对话 → 工具 → 对话 → 报告」
+//     （气泡内部渲染在共享组件 AssistantBlocks，与回放页共用）。
+//   · 布局为左右两栏：左栏=消息滚动区 + 底部「组合输入区」（ChatComposer 子组件：
+//     附件 / 粘贴 / JD 库 / 分析与模型设置 / 思考强度 / 语气滑块 / 拖拽上传 / flash 提示）；
+//     右栏=报告侧边面板（ReportSidePanel 子组件），sticky 展示【最新】一份匹配分析的
+//     【紧凑摘要】（环形匹配度 + 目标岗位 + 简述 + 「查看完整报告」主按钮），
 //     完整报告在 /result/:id 页（全展开）。面板可「隐藏」(reportPanelOpen=false)：
-//     隐藏后右栏消失、聊天区占满宽度，并在角落显示「📊 报告」悬浮角标以便重新展开；
-//     新报告到达时自动展开（reportPanelOpen=true）。消息流里的 report block 不再内联
+//     隐藏后右栏消失、聊天区占满宽度，经左侧边栏「报告 / 学习方案」入口重新展开；
+//     新报告到达时自动展开（reportPanelOpen=true）。消息流里的 report block 不内联
 //     整卡渲染，改为紧凑「引用 chip」，点击让报告面板滚到顶并短暂高亮（若面板被隐藏则
 //     先展开）。窄屏（<960px）两栏纵向堆叠，报告面板移到对话下方且非 sticky。
-//   · composer 的 JD 操作区接入「JD 库」（自包含模态）：可把已存 JD 加入本次分析，
-//     也可把当前已添加的某条 JD 存入库（createSavedJd）。
 //   · 智能滚动只作用于左栏消息容器（scrollRef），右栏不影响贴底判断。
+//   · turns 的追加 / 截断 / 清空、与 SideNav 的信号协同（newChatSignal / reportNav /
+//     openReportSignal）、路由 query.c 监听等编排职责留在本视图。
 //
 // 关键设计——助手消息的有序 blocks 模型：
 //   原先把「文本」与「工具数组」分开存放，渲染时文字堆下面、工具堆上面，
 //   无法还原真实发生顺序。现改为单一有序数组 blocks[]，每个事件「追加到末尾 /
-//   更新末尾同类块」，从而严格保留交错顺序（见 runChat 内各 handler）。
+//   更新末尾同类块」，从而严格保留交错顺序（见 useChatStream 内各 handler）。
 //   发请求时仅把每条消息投影为纯文本（assistant 取其所有 text 块拼接），
 //   工具 / 思考 / 报告不回传后端。
-//
-// SSE 各回调只负责「更新某条助手消息的响应式对象」，与模板渲染解耦（见 runChat）。
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  createSavedJd,
-  fetchLLMModels,
-  getConversation,
-  saveConversation,
-  streamChat,
-  uploadResume,
-} from '../api/client'
-import type {
-  ChatContext,
-  ChatMessage,
-  ReasoningEffort,
-  TurnUsage,
-  WeekItem,
-} from '../types'
-import JdLibrary from '../components/JdLibrary.vue'
-import ScoreRing from '../components/ui/ScoreRing.vue'
+import type { ChatContext, ReasoningEffort, WeekItem } from '../types'
 // 共享助手气泡渲染器：blocks / 错误条 / 无思考提示 / usage 小字 / 打字动效
 // 全部由它渲染（与回放页 ConversationView 共用同一套）。
 import AssistantBlocks from '../components/chat/AssistantBlocks.vue'
+// 底部组合输入区（自包含子组件）：附件 / 粘贴 / JD 库 / 设置 / 工具行 / 拖拽 / flash
+import ChatComposer from '../components/chat/ChatComposer.vue'
+// 右栏报告紧凑摘要面板（纯展示子组件）：开合与信号协同仍由本视图编排
+import ReportSidePanel from '../components/chat/ReportSidePanel.vue'
 // 对话回合视图模型 + 纯函数（类型与序列化/投影/定位逻辑均移至 chatModel.ts）。
 import {
-  addUsage,
-  clearAnalysisToolStatus,
   collapseAllReasoning,
-  deriveTitle,
-  deserializeTurns,
   findLastReportBlock,
-  findPendingTool,
-  findToolById,
-  fmtTokens,
-  serializeTurns,
   snapshotChatContext,
   toPayloadMessages,
 } from '../shared/chatModel'
-import type { AssistantBlock, AssistantTurn, ChatTurn } from '../shared/chatModel'
-import {
-  newChatSignal,
-  notifyConversationsChanged,
-  reportNav,
-  openReportSignal,
-  isWide,
-} from '../shared/appState'
-// 自定义大语言模型（BYO LLM）：全局配置单例 + 生效覆盖（localStorage 持久化见 llmConfig.ts）
-import { llmConfig, effectiveOverride } from '../shared/llmConfig'
+import type { AssistantTurn, ChatTurn } from '../shared/chatModel'
+import { newChatSignal, reportNav, openReportSignal, isWide } from '../shared/appState'
 // localStorage 持久化 ref 统一范式（读取容错 + watch 写回），见 usePersistedRef.ts
 import { usePersistedRef } from '../shared/usePersistedRef'
+// 智能滚动（贴底判定 / 回底 / 未读提示），只作用于左栏消息容器
+import { useSmartScroll } from '../shared/useSmartScroll'
+// 会话自动保存 / 续聊加载 / 新会话重置 + 本会话 token 用量累计（含保存竞态防护）
+import { useConversationPersistence } from '../shared/useConversationPersistence'
+// 一轮流式对话的 SSE 编排 + 停止（streaming / statusLine 单一来源）
+import { useChatStream } from '../shared/useChatStream'
 
 // ---------- 核心状态 ----------
 // 对话消息列表（渲染源）。欢迎语为静态空状态，不入此列表，故不会回传后端。
 const turns = reactive<ChatTurn[]>([])
 
 // 对话上下文：随每条消息一并提交。weeks 默认 4。
+// 以 reactive 直传 ChatComposer（项目现行风格）：素材增删由其直接写回。
 const context = reactive<ChatContext>({
   resume_text: undefined,
   jd_texts: [],
@@ -87,29 +66,14 @@ const context = reactive<ChatContext>({
   weeks: 4,
 })
 
-// 当前输入框文本。
+// 当前输入框文本（经 v-model 与 ChatComposer 同步；发送时由本视图读取并清空）。
 const input = ref('')
 
-// 思考强度：随 streamChat 以 reasoning_effort 提交，默认 'medium'。
-// 6 档：关闭 / 低 / 中 / 高 / 极高 / 最高（中英关键词并列，便于对照模型档位）。
+// 思考强度：随 streamChat 以 reasoning_effort 提交，默认 'medium'（选项与文案在 ChatComposer）。
 const reasoningEffort = ref<ReasoningEffort>('medium')
-const effortOptions: { value: ReasoningEffort; label: string }[] = [
-  { value: 'off', label: '关闭' },
-  { value: 'low', label: '低 low' },
-  { value: 'medium', label: '中 medium' },
-  { value: 'high', label: '高 high' },
-  { value: 'xhigh', label: '极高 xhigh' },
-  { value: 'max', label: '最高 max' },
-]
-
-// 思考强度说明文案（用于选择器旁的 ⓘ 提示）。
-const effortTip =
-  '思考强度对支持推理的模型生效（如 OpenAI o 系列、DeepSeek-Reasoner、Claude）；' +
-  '不支持的模型本项无效，也不影响正常对话。' +
-  '在多数 OpenAI 协议模型上“极高/最高”等同“高”。'
 
 // E3 人设引擎（B5：单人设 + 语气滑块）：语气强度 0=最温柔…100=最严格，随对话以 context.tone 提交。
-// 持久化 op.tone（数字字符串）：非数值/越界回退 50。
+// 持久化 op.tone（数字字符串）：非数值/越界回退 50。滑块交互在 ChatComposer（v-model:tone）。
 const tone = usePersistedRef<number>('op.tone', () => 50, {
   parse: (raw) => {
     const v = Number(raw)
@@ -117,69 +81,30 @@ const tone = usePersistedRef<number>('op.tone', () => 50, {
   },
   serialize: String,
 })
-const toneLabel = computed(() => {
-  const t = tone.value
-  if (t <= 20) return '最温柔'
-  if (t <= 40) return '偏鼓励'
-  if (t <= 60) return '平衡'
-  if (t <= 80) return '偏严格'
-  return '最严格'
-})
-const toneTip =
-  '语气滑块（仅调 AI 措辞，不改分析逻辑）：左=温柔鼓励、多共情；右=严格鞭策、坦诚指出差距。' +
-  '无论松紧都基于事实、不报具体 Offer 概率。可用鼠标滚轮或聚焦后方向键调节。'
 
-const TONE_STEP = 10
-function clampTone(v: number): number {
-  return Math.max(0, Math.min(100, v))
-}
-// 鼠标滚轮调节语气：上滚=更严格(+)，下滚=更温柔(−)。流式中不拦截，留作正常页面滚动。
-function onToneWheel(e: WheelEvent): void {
-  if (streaming.value) return
-  e.preventDefault()
-  tone.value = clampTone(tone.value + (e.deltaY < 0 ? TONE_STEP : -TONE_STEP))
-}
-
-// 高层阶段提示（onStatus 的兜底）——显示在输入区上方的细条。
-// 注意：分析类工具（analyze_match / generate_plan）运行期间的子步骤优先写入对应 tool 块的 status；
-// 仅在找不到进行中的工具块时，才退化为这里的顶部细条。
-const statusLine = ref('')
-
-// 流式进行中标记与中止控制器。
-const streaming = ref(false)
-let abortController: AbortController | null = null
+// 流式状态（streaming / statusLine）的单一来源在 useChatStream
+// （见下方「发送与流式处理」段的接入；abortController 为其私有）。
 
 // ---------- 会话自动保存 ----------
-// 当前会话在后端的 id：null 表示尚未保存（新会话）；
-// 每轮助手回复结束后自动 upsert，并用返回 id 回填，实现「后续轮次更新同一会话」。
-const conversationId = ref<number | null>(null)
+// conversationId / loadingConversation / sessionUsage 的单一来源在
+// useConversationPersistence（见下方「会话自动保存」段的接入）。
 
 // 最近一次匹配分析的 id（来自 report 事件）。随请求 context 回传，
 // 供第二步 generate_plan 跨轮定位本次匹配分析。
 const currentRunId = ref<number | null>(null)
 
-// ---------- 本会话 token 用量累计 ----------
-// 每轮 SSE usage 事件累加到此（input_hit/input_miss/output/total）；
-// 续聊加载历史会话时从各轮 usage 重算。供「全链路统一口径」展示本会话累计。
-const sessionUsage = ref<TurnUsage>({ input_hit: 0, input_miss: 0, output: 0, total: 0 })
-
-// 本会话累计是否有数据（决定是否展示累计小字）。
-const hasSessionUsage = computed(() => (sessionUsage.value.total ?? 0) > 0)
-
 // 路由：读取 query.c 以支持「历史续聊」（进入 /?c=<id> 加载该会话续聊）。
 const route = useRoute()
 const router = useRouter()
-// 正在加载历史会话的标记：避免加载期间触发自动保存等副作用。
-const loadingConversation = ref(false)
 
-// ---------- DOM 引用 ----------
+// ---------- DOM / 子组件引用 ----------
 const scrollRef = ref<HTMLElement | null>(null) // 左栏消息滚动容器（智能滚动只作用于它）
-const fileInput = ref<HTMLInputElement | null>(null) // 隐藏的 PDF 文件框
-const textareaRef = ref<HTMLTextAreaElement | null>(null) // 输入框
-const reportPanelRef = ref<HTMLElement | null>(null) // 右侧报告面板滚动容器（点击 chip 时滚到顶并高亮）
+const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null) // 输入区（focusInput / flash）
+const reportPanelRef = ref<InstanceType<typeof ReportSidePanel> | null>(null) // 报告面板（focusTop）
 
 // ---------- 派生状态 ----------
-// 是否已存在「可分析的素材」：有简历或至少一条 JD。
+// 是否已存在「可分析的素材」：有简历或至少一条 JD（发送守卫用；
+// ChatComposer 内部另有同口径派生供发送按钮禁用态）。
 const hasAttachments = computed(
   () =>
     Boolean(context.resume_text && context.resume_text.trim()) ||
@@ -195,7 +120,7 @@ const showWelcome = computed(() => turns.length === 0)
 const latestReport = computed(() => findLastReportBlock(turns))
 
 // 报告侧栏开合：默认展开。隐藏后右栏消失、聊天区占满宽度，
-// 并在角落显示「📊 报告」悬浮角标供重新展开。
+// 经左侧边栏「报告 / 学习方案」入口重新展开。
 const reportPanelOpen = ref(true)
 
 // 新报告到达（latestReport 由「无 / 旧 id」变为「有值且 id 变化」）时自动展开，
@@ -225,81 +150,29 @@ async function goToFullReport(): Promise<void> {
 
 // ---------- 学习方案（最终主产出） ----------
 // 最新报告里的学习路线（周计划）；为空表示尚未进入第二步生成计划。
+// 面板内的预览列表 / 主按钮文案由 ReportSidePanel 自行派生，此处只为
+// hasPlan（reportNav 同步 + 面板 props）保留计算。
 const latestRoadmap = computed<WeekItem[]>(() => {
   const r = latestReport.value?.result.roadmap
   return Array.isArray(r) ? [...r].sort((a, b) => a.week - b.week) : []
 })
 // 是否已生成学习方案（有非空周计划）——决定侧栏以「学习方案」还是「匹配分析」为主角。
 const hasPlan = computed(() => latestRoadmap.value.length > 0)
-// 侧栏学习方案预览：取前 3 周（周号 + 该周聚焦技能前 3 项）。
-const planPreview = computed(() =>
-  latestRoadmap.value.slice(0, 3).map((w) => ({
-    week: w.week,
-    focus: (w.focus_skills ?? []).slice(0, 3),
-  })),
-)
-// 主按钮文案：已出方案 → 查看完整学习方案；仅匹配分析 → 查看完整报告。
-const fullReportCtaLabel = computed(() =>
-  hasPlan.value ? '查看完整学习方案' : '查看完整报告',
-)
-
-// 点击报告引用 chip 时，让右侧面板滚到顶并短暂高亮（提示「报告在这里」）。
-const reportHighlight = ref(false)
-let reportHighlightTimer: ReturnType<typeof setTimeout> | undefined
-
-// 发送按钮是否可用：流式中不可发；否则需有文本或有新素材。
-const canSend = computed(
-  () => !streaming.value && (input.value.trim().length > 0 || hasAttachments.value),
-)
-
-// 周数下拉选项 1~12。
-const weekOptions = Array.from({ length: 12 }, (_, i) => i + 1)
 
 // ---------- 智能滚动 ----------
-// 贴底判定阈值：滚动位置距底部 <= 此像素数视为「贴底」。
-const BOTTOM_THRESHOLD = 80
-
-// 是否处于（或贴近）底部。初始为真：空会话/首次进入应跟随最新内容。
-const atBottom = ref(true)
-// 流式中有新内容、但用户已上滑离开底部 → 用于「回到底部」按钮上的提示点。
-const hasUnreadBelow = ref(false)
-
-// 计算当前滚动容器是否贴底。
-function computeAtBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
-}
-
-// 滚动事件：实时维护 atBottom；一旦回到底部即清除未读提示。
-function onScroll(): void {
-  const el = scrollRef.value
-  if (!el) return
-  atBottom.value = computeAtBottom(el)
-  if (atBottom.value) hasUnreadBelow.value = false
-}
-
-// 滚到最底；用 nextTick 等待 DOM 更新。force=true 时无视当前位置强制贴底。
-async function scrollToBottom(force = false): Promise<void> {
-  if (!force && !atBottom.value) return
-  await nextTick()
-  const el = scrollRef.value
-  if (!el) return
-  el.scrollTop = el.scrollHeight
-  atBottom.value = true
-  hasUnreadBelow.value = false
-}
-
-// 点击「回到底部」浮动按钮：强制贴底并清除未读提示。
-function jumpToBottom(): void {
-  void scrollToBottom(true)
-}
-
-// 流式期间内容持续增长，监听消息变化做「智能贴底」。
-// 追踪：消息条数、各助手消息的 blocks 数量、末块的文本长度 / 工具状态、流式标记，
-// 以覆盖「新增气泡、增量文本、工具活动、报告到达」等所有会改变高度的情形。
-// 行为：仅当 atBottom 为真时才自动贴底；用户上滑离开底部后不再强制拉回，
-// 此时若仍在流式中则点亮「回到底部」按钮的未读提示点。
-watch(
-  () =>
+// 贴底判定 / 回底 / 未读提示由 useSmartScroll 承担（阈值默认 80px）。
+// contentKey 追踪：消息条数、各助手消息的 blocks 数量、末块的文本长度 / 工具状态、
+// 流式标记，以覆盖「新增气泡、增量文本、工具活动、报告到达」等所有会改变高度的情形。
+const {
+  atBottom,
+  hasUnreadBelow,
+  onScroll,
+  scrollToBottom,
+  jumpToBottom,
+  resetToBottom,
+} = useSmartScroll({
+  scrollRef,
+  contentKey: () =>
     turns
       .map((t) => {
         if (t.role !== 'assistant') return 'u'
@@ -317,280 +190,35 @@ watch(
         return `a:${t.blocks.length}:${tail}:${t.streaming ? 1 : 0}:${t.error ? 1 : 0}`
       })
       .join('|'),
-  () => {
-    if (atBottom.value) {
-      void scrollToBottom()
-    } else if (streaming.value) {
-      // 用户在上方查看历史，下方有新内容到达 → 提示有新内容
-      hasUnreadBelow.value = true
-    }
-  },
-)
-
-// ===================================================================
-//  附件 / 上下文管理
-// ===================================================================
-
-// —— 内联输入区（粘贴简历 / 添加 JD）开合与内容 ——
-const pasteOpen = ref(false)
-const pasteText = ref('')
-
-function togglePaste(): void {
-  pasteOpen.value = !pasteOpen.value
-}
-
-// 把内联文本设为简历。
-function applyPasteAsResume(): void {
-  const text = pasteText.value.trim()
-  if (!text) return
-  context.resume_text = text
-  pasteText.value = ''
-  pasteOpen.value = false
-  flashHint('已将粘贴内容设为简历')
-}
-
-// 把内联文本作为一条 JD 追加。
-function applyPasteAsJd(): void {
-  const text = pasteText.value.trim()
-  if (!text) return
-  if (!context.jd_texts) context.jd_texts = []
-  context.jd_texts.push(text)
-  pasteText.value = ''
-  pasteOpen.value = false
-  flashHint('已添加 1 条 JD')
-}
-
-// —— JD 列表展开管理 ——
-const jdManagerOpen = ref(false)
-function toggleJdManager(): void {
-  jdManagerOpen.value = !jdManagerOpen.value
-}
-function removeJd(index: number): void {
-  context.jd_texts?.splice(index, 1)
-  if ((context.jd_texts?.length ?? 0) === 0) jdManagerOpen.value = false
-}
-
-// —— JD 库（自包含模态）开合与对接 ——
-const jdLibraryOpen = ref(false)
-function openJdLibrary(): void {
-  jdLibraryOpen.value = true
-}
-function closeJdLibrary(): void {
-  jdLibraryOpen.value = false
-}
-
-// JD 库「加入分析」回调：把每条内容追加进 context.jd_texts 并提示已添加。
-function onUseSavedJds(contents: string[]): void {
-  const list = contents.map((c) => c.trim()).filter((c) => c.length > 0)
-  if (list.length === 0) return
-  if (!context.jd_texts) context.jd_texts = []
-  context.jd_texts.push(...list)
-  flashHint(`已添加 ${list.length} 条 JD`)
-}
-
-// 把已添加的某条 JD「存入 JD 库」：标题取前 20 字（去空白），空则「未命名 JD」。
-const savingJdIndex = ref<number | null>(null)
-async function saveJdToLibrary(index: number): Promise<void> {
-  if (savingJdIndex.value !== null) return
-  const content = context.jd_texts?.[index]?.trim()
-  if (!content) return
-  const title = content.slice(0, 20).trim() || '未命名 JD'
-  savingJdIndex.value = index
-  try {
-    await createSavedJd({ title, content })
-    flashHint('已存入 JD 库')
-  } catch (err) {
-    flashHint(err instanceof Error ? err.message : '存入 JD 库失败，请重试', true)
-  } finally {
-    savingJdIndex.value = null
-  }
-}
-
-// —— 移除简历 ——
-function removeResume(): void {
-  context.resume_text = undefined
-}
-
-// —— 分析设置（目标岗位 / 周数）开合 ——
-const settingsOpen = ref(false)
-function toggleSettings(): void {
-  settingsOpen.value = !settingsOpen.value
-}
-
-// —— 模型设置（自定义大语言模型 BYO LLM）开合与拉取态 ——
-// 面板里直接 v-model 绑 llmConfig（全局单例，localStorage 持久化由 llmConfig.ts 负责）。
-const modelSettingsOpen = ref(false)
-// 从所填端点拉取到的可用模型列表（供三档输入框的 datalist 下拉；拉不到时仍可手输）。
-const modelList = ref<string[]>([])
-// 拉取状态机与状态文案。
-const modelFetchState = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
-const modelFetchMsg = ref('')
-// Provider 协议选项（与后端 _eff_provider 的两类客户端对应）。
-const providerOptions = [
-  { value: 'openai', label: 'OpenAI 协议' },
-  { value: 'anthropic', label: 'Anthropic 协议' },
-]
-function toggleModelSettings(): void {
-  modelSettingsOpen.value = !modelSettingsOpen.value
-}
-// 刷新模型列表（顺带是连通性测试）：成功填 modelList，失败仍允许手输。
-async function refreshModels(): Promise<void> {
-  modelFetchState.value = 'loading'
-  const res = await fetchLLMModels(llmConfig.value)
-  if (res.ok) {
-    modelList.value = res.models
-    modelFetchState.value = 'ok'
-    modelFetchMsg.value = `已连接，${res.models.length} 个模型`
-  } else {
-    modelFetchState.value = 'error'
-    modelFetchMsg.value = res.error || '拉取失败，可手输'
-  }
-}
-
-// ---------- PDF 上传 ----------
-const uploading = ref(false)
-
-// 触发隐藏文件框。
-function triggerUpload(): void {
-  if (uploading.value) return
-  fileInput.value?.click()
-}
-
-// 选择 PDF → 交给统一的上传处理。
-async function onFileChange(event: Event): Promise<void> {
-  const el = event.target as HTMLInputElement
-  const file = el.files?.[0]
-  el.value = '' // 允许重复选择同一文件
-  if (file) await ingestResumeFile(file)
-  // 文件框关闭后焦点回到输入框：恢复 composer 展开态、衔接后续输入
-  textareaRef.value?.focus()
-}
-
-// 统一的简历文件处理：校验 PDF → 上传解析 → 写入 context.resume_text。
-// 文件框选择与拖拽放入共用。
-async function ingestResumeFile(file: File): Promise<void> {
-  if (uploading.value) return
-  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-  if (!isPdf) {
-    flashHint('目前仅支持 PDF 简历，其它格式请粘贴文本', true)
-    return
-  }
-  uploading.value = true
-  try {
-    const resume = await uploadResume(file)
-    context.resume_text = resume.raw_text
-    flashHint(`已添加简历「${file.name}」`)
-  } catch (err) {
-    flashHint(err instanceof Error ? err.message : '简历解析失败，请重试', true)
-  } finally {
-    uploading.value = false
-  }
-}
-
-// ---------- 拖拽上传 ----------
-// 拖动文件到 composer 时，输入区扩大并提示「松开以上传简历」。
-// 用计数器避免子元素 dragenter/dragleave 造成的闪烁。
-const dragOver = ref(false)
-let dragDepth = 0
-
-// 仅对「文件」拖拽响应（忽略选中文本等拖拽）。
-function isFileDrag(e: DragEvent): boolean {
-  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
-}
-
-function onDragEnter(e: DragEvent): void {
-  if (!isFileDrag(e)) return
-  e.preventDefault()
-  dragDepth += 1
-  dragOver.value = true
-}
-
-function onDragOver(e: DragEvent): void {
-  if (!isFileDrag(e)) return
-  e.preventDefault() // 必须阻止默认才能触发 drop
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
-}
-
-function onDragLeave(e: DragEvent): void {
-  if (!isFileDrag(e)) return
-  dragDepth -= 1
-  if (dragDepth <= 0) {
-    dragDepth = 0
-    dragOver.value = false
-  }
-}
-
-async function onDrop(e: DragEvent): Promise<void> {
-  if (!isFileDrag(e)) return
-  e.preventDefault()
-  dragDepth = 0
-  dragOver.value = false
-  const file = e.dataTransfer?.files?.[0]
-  if (file) await ingestResumeFile(file)
-}
-
-// ---------- 轻量浮层提示 ----------
-const hint = ref('')
-const hintError = ref(false)
-let hintTimer: ReturnType<typeof setTimeout> | undefined
-
-// 短暂展示一条操作反馈，自动消失。
-function flashHint(message: string, isError = false): void {
-  hint.value = message
-  hintError.value = isError
-  if (hintTimer) clearTimeout(hintTimer)
-  hintTimer = setTimeout(() => {
-    hint.value = ''
-  }, 2600)
-}
-
-// ===================================================================
-//  组合输入区：视觉融合 + 失焦折叠为一行
-// ===================================================================
-// composer 容器引用：用于失焦判定（焦点是否仍在容器内）。
-const composerBoxRef = ref<HTMLElement | null>(null)
-// composer 是否聚焦（焦点位于容器内任意元素）。
-const composerFocused = ref(false)
-// 是否展开：聚焦 / 打开了某面板 / 拖拽中 / 已输入文字 时展开；否则折叠为单行。
-const composerExpanded = computed(
-  () =>
-    composerFocused.value ||
-    pasteOpen.value ||
-    settingsOpen.value ||
-    jdManagerOpen.value ||
-    dragOver.value ||
-    input.value.trim().length > 0,
-)
-// 已附素材计数（折叠态在附件按钮上显示角标，提示「已带素材」）。
-const attachmentCount = computed(
-  () =>
-    (context.resume_text && context.resume_text.trim() ? 1 : 0) +
-    (context.jd_texts?.length ?? 0),
-)
-function onComposerFocusIn(): void {
-  composerFocused.value = true
-}
-function onComposerFocusOut(): void {
-  // 延迟到焦点转移完成后再判定：以 document.activeElement 是否仍在 composer 容器内为准。
-  // 这样兼容「点击 <select> 下拉 / 原生文件框 / 非可聚焦区域」等 relatedTarget 为 null 的情形，
-  // 避免与这些原生控件交互途中 composer 被误折叠。
-  window.setTimeout(() => {
-    const box = composerBoxRef.value
-    const active = document.activeElement
-    composerFocused.value = !!(
-      box &&
-      active &&
-      active !== document.body &&
-      box.contains(active)
-    )
-  }, 0)
-}
+  isStreaming: () => streaming.value,
+})
 
 // ===================================================================
 //  发送与流式处理
 // ===================================================================
 
-// 点击发送：组装用户消息与助手占位，发起流式对话。
+// 一轮 SSE 的编排（runChat）与停止由 useChatStream 承担；其契约：
+// runChat 返回的 Promise resolve 即一轮完整收尾（含中止路径），收尾时经
+// onTurnFinished 在此串接「折叠思考块 → 收尾贴底 → 自动保存」。
+const { streaming, statusLine, runChat, stop } = useChatStream({
+  effort: reasoningEffort,
+  buildContext: () => snapshotChatContext(context, currentRunId.value, tone.value),
+  onReportRunId: (id) => {
+    // 记录最近一次匹配分析 id，供第二步 generate_plan 跨轮使用
+    currentRunId.value = id
+  },
+  onUsage: (e) => addTurnUsage(e),
+  onTurnFinished: (assistant) => {
+    // 本轮结束：自动折叠所有思考块（用户仍可手动展开回看）
+    collapseAllReasoning(assistant)
+    // 收尾贴底：仅当用户仍在底部时跟随（上滑查看历史则不强拉回）
+    void scrollToBottom()
+    // 本轮结束后自动保存会话（不阻塞、失败仅告警）
+    void persistConversation()
+  },
+})
+
+// 点击发送（ChatComposer 的 send 事件，不带参）：组装用户消息与助手占位，发起流式对话。
 async function send(): Promise<void> {
   if (streaming.value) return
 
@@ -599,10 +227,9 @@ async function send(): Promise<void> {
   if (!raw && !hasAttachments.value) return
   const userText = raw || '请基于我已提供的简历和 JD 开始分析。'
 
-  // 1) 追加用户消息
+  // 1) 追加用户消息（输入清空后的高度复位由 ChatComposer 内 watch 自动完成）
   turns.push({ role: 'user', text: userText })
   input.value = ''
-  resetTextareaHeight()
   // 用户主动发送：强制贴底并复位 atBottom，确保看到自己刚发出的消息与后续回复
   void scrollToBottom(true)
 
@@ -625,221 +252,45 @@ async function send(): Promise<void> {
   await runChat(assistant, requestMessages)
 }
 
-// ---------- block 操作小工具 ----------
-// 取末块。
-function lastBlock(a: AssistantTurn): AssistantBlock | undefined {
-  return a.blocks[a.blocks.length - 1]
-}
-
-// 真正执行一轮 SSE：handlers 仅更新传入的助手消息对象，与渲染解耦。
-async function runChat(
-  assistant: AssistantTurn,
-  requestMessages: ChatMessage[],
-): Promise<void> {
-  // 重置该条消息的可变状态（用于重试场景复用同一对象）
-  assistant.blocks = []
-  assistant.error = undefined
-  assistant.streaming = true
-  assistant.reasoningOpen = {}
-  assistant.noThinking = false
-  // 记录发起本轮所用的思考强度（结束时据此判断「应有思考却无思考」；
-  // 重试时会按当前选择刷新，符合「发起该轮时所用强度」语义）。
-  const turnEffort = reasoningEffort.value
-  assistant.effort = turnEffort
-
-  streaming.value = true
-  statusLine.value = ''
-  abortController = new AbortController()
-
-  await streamChat(
-    {
-      messages: requestMessages,
-      context: snapshotChatContext(context, currentRunId.value, tone.value),
-      reasoning_effort: turnEffort,
-      // 自定义大语言模型覆盖（六字段全空则为 undefined，回退后端 .env）。
-      llm_override: effectiveOverride(),
-      // 当前本地时间（可读字符串）——让 AI 知道“现在”，避免检索旧年份信息。
-      client_time: new Date().toLocaleString('zh-CN', { hour12: false }),
-    },
-    {
-      // 思考增量：末块是 reasoning 则追加，否则新开一个 reasoning 块（流式默认展开）
-      onReasoning: (e) => {
-        const last = lastBlock(assistant)
-        if (last && last.kind === 'reasoning') {
-          last.text += e.text
-        } else {
-          assistant.blocks.push({ kind: 'reasoning', text: e.text })
-          assistant.reasoningOpen[assistant.blocks.length - 1] = true
-        }
-      },
-      // 增量文本：末块是 text 则追加，否则新开一个 text 块
-      onDelta: (e) => {
-        const last = lastBlock(assistant)
-        if (last && last.kind === 'text') {
-          last.text += e.text
-        } else {
-          assistant.blocks.push({ kind: 'text', text: e.text })
-        }
-      },
-      // 工具调用 → 追加一个「进行中」工具块（steps 初始化为空，承载过程日志）
-      onToolCall: (e) => {
-        assistant.blocks.push({
-          kind: 'tool',
-          id: e.id,
-          name: e.name,
-          label: e.label,
-          steps: [],
-          resultsOpen: false,
-        })
-      },
-      // 阶段/子进度：把 message【追加】到「最近一个未完成的工具块」的 steps 过程日志，
-      // 并把 status 记为最后一条（展示以 steps 列表为准）；
-      // 找不到进行中的工具块才退化为顶部细条。
-      onStatus: (e) => {
-        const pending = findPendingTool(assistant)
-        if (pending) {
-          if (!pending.steps) pending.steps = []
-          pending.steps.push(e.message)
-          pending.status = e.message
-          statusLine.value = ''
-        } else {
-          statusLine.value = e.message
-        }
-      },
-      // 工具返回 → 按 id 更新对应块（标记完成 + 替换为结果摘要 + 清空进行中单行；
-      // steps 过程日志保留，供用户回看分析过程）
-      onToolResult: (e) => {
-        const t = findToolById(assistant, e.id)
-        if (t) {
-          t.ok = e.ok
-          if (e.label) t.label = e.label
-          t.status = undefined
-        } else {
-          // 兜底：未见过 tool_call 也补一个已完成块，避免结果丢失
-          assistant.blocks.push({
-            kind: 'tool',
-            id: e.id,
-            name: e.name,
-            label: e.label,
-            ok: e.ok,
-          })
-        }
-      },
-      // 联网搜索结果详情 → 挂到对应 web_search 工具块（默认折叠，用户可展开查看）
-      onSearchResults: (e) => {
-        const t = findToolById(assistant, e.id)
-        if (t) {
-          t.query = e.query
-          t.results = e.results
-        }
-      },
-      // 结构化报告 → 追加报告块，并把对应分析类工具块的 status 清空
-      onReport: (e) => {
-        clearAnalysisToolStatus(assistant)
-        // 记录最近一次匹配分析 id，供第二步 generate_plan 跨轮使用
-        currentRunId.value = e.analysis_run_id
-        assistant.blocks.push({
-          kind: 'report',
-          analysis_run_id: e.analysis_run_id,
-          result: e.result,
-        })
-      },
-      // 本轮 token 用量 → 记到该条消息（气泡小字）并累加到本会话累计
-      onUsage: (e) => {
-        assistant.usage = e
-        sessionUsage.value = addUsage(sessionUsage.value, e)
-      },
-      // 出错 → 记录到该条消息，模板内展示错误条 + 重试
-      onError: (e) => {
-        assistant.error = e.message || '对话出错，请重试。'
-      },
-      // 本轮结束
-      onDone: () => {
-        statusLine.value = ''
-      },
-    },
-    abortController.signal,
-  )
-
-  // 流结束（正常 / 中止 / 出错）后统一收尾
-  assistant.streaming = false
-  streaming.value = false
-  statusLine.value = ''
-  abortController = null
-  // 「无思考」提示：本轮发起时强度非 off，但模型未输出任何 reasoning 块，
-  // 且本轮无错误（出错时不提示，避免干扰错误条）。
-  assistant.noThinking =
-    turnEffort !== 'off' &&
-    !assistant.error &&
-    !assistant.blocks.some((b) => b.kind === 'reasoning')
-  // 兜底：若本轮既无任何内容、也无「无思考」提示（如 off 档且模型零输出），
-  // 补一条占位文本，确保气泡仍可见、消息不至于凭空消失。
-  if (!assistant.error && !assistant.noThinking && assistant.blocks.length === 0) {
-    assistant.blocks.push({ kind: 'text', text: '（本轮无输出）' })
-  }
-  // 本轮结束：自动折叠所有思考块（用户仍可手动展开回看）
-  collapseAllReasoning(assistant)
-  // 收尾贴底：仅当用户仍在底部时跟随（上滑查看历史则不强拉回）
-  void scrollToBottom()
-  // 本轮结束后自动保存会话（不阻塞、失败仅告警）
-  void persistConversation()
-}
-
 // ===================================================================
 //  会话自动保存
 // ===================================================================
 
-// 加载某段已存会话用于「续聊」：拉取详情 → 反序列化 turns → 恢复 context 与
-// conversationId / currentRunId → 滚到底部。失败给出错误提示并回退为新对话。
-// 注意：加载期间置位 loadingConversation，避免清空动作把会话洗成空白后被误保存。
-async function loadConversation(id: number): Promise<void> {
-  if (!Number.isFinite(id) || id <= 0) return
-  loadingConversation.value = true
-  try {
-    const detail = await getConversation(id)
-    // 还原对话消息
-    const restored = deserializeTurns(detail.turns)
-    turns.splice(0, turns.length, ...restored)
-    // 从各轮 usage 重算本会话 token 累计（续聊恢复全链路口径）
-    sessionUsage.value = restored.reduce<TurnUsage>(
-      (acc, t) => (t.role === 'assistant' && t.usage ? addUsage(acc, t.usage) : acc),
-      { input_hit: 0, input_miss: 0, output: 0, total: 0 },
-    )
-    // 还原续聊上下文（简历 / JD / 目标岗位 / 周数）
-    const ctx = detail.context ?? {}
-    context.resume_text =
-      ctx.resume_text && ctx.resume_text.trim() ? ctx.resume_text : undefined
-    context.jd_texts = Array.isArray(ctx.jd_texts) ? [...ctx.jd_texts] : []
-    context.target_role = ctx.target_role ?? ''
-    context.weeks = ctx.weeks ?? 4
-    // E3：恢复该会话存盘的语气强度（无则保持当前/默认）
-    if (typeof ctx.tone === 'number' && ctx.tone >= 0 && ctx.tone <= 100) {
-      tone.value = ctx.tone
-    }
-    // 绑定到同一会话，后续轮次保存回此 id
-    conversationId.value = detail.id
-    // 恢复最近一次匹配分析 id：优先取 turns 中最后一个 report 块，
-    // 兜底回退到持久化 context.analysis_run_id（两者通常一致）。
-    currentRunId.value =
-      findLastReportBlock(detail.turns)?.analysis_run_id ?? ctx.analysis_run_id ?? null
+// 持久化 + 本会话 token 用量累计由 useConversationPersistence 承担
+// （含「保存返回覆盖新对话 id」的 generation 竞态防护）；
+// 滚动聚焦 / flash 提示 / 路由清理等视图职责经 onLoaded / onLoadError 留在本视图。
+const {
+  conversationId,
+  loadingConversation,
+  sessionUsage,
+  hasSessionUsage,
+  addTurnUsage,
+  persist: persistConversation,
+  load: loadConversation,
+  reset: resetConversation,
+} = useConversationPersistence({
+  turns,
+  context,
+  tone,
+  currentRunId,
+  buildContext: () => snapshotChatContext(context, currentRunId.value, tone.value),
+  onLoaded: () => {
     // 进入续聊：滚到底部，用户可直接继续对话
-    atBottom.value = true
-    hasUnreadBelow.value = false
+    resetToBottom()
     void scrollToBottom(true)
     // 续聊会话载入完成，聚焦输入框便于继续对话
     autoFocusInput()
-  } catch (err) {
-    // 加载失败：提示并回退为一段空白新对话（去掉 query.c，避免反复重试）
-    flashHint(err instanceof Error ? err.message : '加载历史会话失败，已切换为新对话', true)
-    turns.splice(0, turns.length)
-    conversationId.value = null
-    currentRunId.value = null
-    sessionUsage.value = { input_hit: 0, input_miss: 0, output: 0, total: 0 }
+  },
+  onLoadError: (err) => {
+    // 加载失败：提示（经 ChatComposer 的 flash 浮层）并回退为一段空白新对话
+    // （去掉 query.c，避免反复重试）
+    composerRef.value?.flash(
+      err instanceof Error ? err.message : '加载历史会话失败，已切换为新对话',
+      true,
+    )
     if (route.query.c != null) void router.replace('/')
-  } finally {
-    loadingConversation.value = false
-  }
-}
+  },
+})
 
 // 监听路由 query.c：进入或其变化为某会话 id 时加载续聊；为空时不动作
 // （避免与「新对话」清空冲突——清空由 newConversation 主动完成）。
@@ -856,40 +307,17 @@ watch(
   { immediate: true },
 )
 
-// upsert 当前会话：需至少 1 条 user 消息；用返回 id 回填 conversationId。
-// 失败仅 console 警告，不打扰用户。
-async function persistConversation(): Promise<void> {
-  // 历史会话加载中：跳过保存，避免与加载中的中间态竞争写回
-  if (loadingConversation.value) return
-  if (!turns.some((t) => t.role === 'user')) return
-  try {
-    const saved = await saveConversation({
-      id: conversationId.value,
-      title: deriveTitle(turns),
-      turns: serializeTurns(turns),
-      // 随会话存盘当前上下文快照，供「历史续聊」恢复简历/JD/目标岗位/周数/分析 id
-      context: snapshotChatContext(context, currentRunId.value, tone.value),
-    })
-    conversationId.value = saved.id
-    // 通知左侧栏刷新「最近会话」列表（新会话/新标题即时出现）
-    notifyConversationsChanged()
-  } catch (err) {
-    console.warn('[会话自动保存失败]', err)
-  }
-}
-
 // ---------- 新对话 ----------
 // 清空当前对话并开始一段全新会话（conversationId 置空 → 下次保存即新建）。
 // 同时去掉路由 query.c，避免续聊监听器把刚清空的会话重新加载回来。
 function newConversation(): void {
   if (streaming.value) return
   turns.splice(0, turns.length)
-  conversationId.value = null
+  // 切换会话身份：conversationId 置空 + 累计清零 + 作废在途保存的 id 回填
+  resetConversation()
   currentRunId.value = null
-  sessionUsage.value = { input_hit: 0, input_miss: 0, output: 0, total: 0 }
   statusLine.value = ''
-  atBottom.value = true
-  hasUnreadBelow.value = false
+  resetToBottom()
   // 当前停留在 /?c=<id> 时，回到干净的 '/'（无 query）开始新对话
   if (route.query.c != null) void router.replace('/')
   // 新对话就绪，聚焦输入框便于立即开始
@@ -902,11 +330,6 @@ watch(newChatSignal, () => {
   if (!loadingConversation.value) newConversation()
 })
 
-// 流式中点击「停止」：中止当前请求。
-function stop(): void {
-  abortController?.abort()
-}
-
 // 编辑某条用户消息：把它放回输入框，并移除它及其之后的所有消息（回复），
 // 便于改完重新发送。常用于「不小心回车 → 点停止 → 编辑上一条」。
 // 流式进行中不可编辑，请先点「停止」。
@@ -917,10 +340,8 @@ function editTurn(index: number): void {
   input.value = turn.text
   // 截断：移除该用户消息及其之后的所有消息
   turns.splice(index)
-  void nextTick(() => {
-    autoGrow()
-    textareaRef.value?.focus()
-  })
+  // 回填后聚焦输入框（高度同步在 focusInput 内完成）
+  composerRef.value?.focusInput()
 }
 
 // 重试某条出错的助手消息：用其记录的历史快照重新发起。
@@ -933,47 +354,22 @@ async function retry(assistant: AssistantTurn): Promise<void> {
   await runChat(assistant, msgs)
 }
 
-// ---------- 输入框：Enter 发送 / Shift+Enter 换行 + 自适应高度 ----------
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault()
-    void send()
-  }
-}
-
-// 随内容增减自适应高度（限制最大高度，超出滚动）。
-function autoGrow(): void {
-  const el = textareaRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 180)}px`
-}
-
-function resetTextareaHeight(): void {
-  const el = textareaRef.value
-  if (el) el.style.height = 'auto'
-}
-
+// ---------- 输入框聚焦 ----------
 // 让输入框获得焦点（聚焦同时会经 composer 的 focusin 展开输入区）。
 // 仅宽屏自动聚焦：移动端自动聚焦会立刻弹出软键盘，打扰浏览，故跳过。
 function autoFocusInput(): void {
   if (!isWide.value) return
-  void nextTick(() => textareaRef.value?.focus())
+  composerRef.value?.focusInput()
 }
 
 // 页面打开即聚焦输入框，用户可直接开始输入。
 onMounted(autoFocusInput)
 
-// 输入内容变化时同步高度。
-watch(input, () => {
-  void nextTick(autoGrow)
-})
-
 // ===================================================================
-//  渲染辅助
+//  报告面板的视线引导与侧栏协同
 // ===================================================================
-// blocks 级渲染辅助（折叠切换 / spinner 判定等）已随气泡渲染移入
-// components/chat/AssistantBlocks.vue，此处只剩报告面板的视线引导。
+// blocks 级渲染辅助已在 components/chat/AssistantBlocks.vue；
+// 面板自身的滚顶 + 高亮在 ReportSidePanel.focusTop()。
 
 // 点击消息流里的报告引用 chip：让右侧（或窄屏下方）报告面板滚到顶并短暂高亮，
 // 帮助用户把视线引导到报告所在处。报告面板仅展示「最新」一份，故此处不按具体 block 定位。
@@ -982,21 +378,7 @@ function focusReportPanel(): void {
   // 先确保面板可见（隐藏态下 <aside> 不渲染，需置位后等 DOM 更新才能拿到 ref）
   reportPanelOpen.value = true
   void nextTick(() => {
-    const el = reportPanelRef.value
-    if (el) {
-      // 面板自身滚到顶；并把面板滚入视口（窄屏堆叠在下方时尤为有用）
-      el.scrollTop = 0
-      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    }
-    // 触发一次短暂高亮（重置计时器以支持连续点击）
-    reportHighlight.value = false
-    void nextTick(() => {
-      reportHighlight.value = true
-      if (reportHighlightTimer) clearTimeout(reportHighlightTimer)
-      reportHighlightTimer = setTimeout(() => {
-        reportHighlight.value = false
-      }, 1200)
-    })
+    reportPanelRef.value?.focusTop()
   })
 }
 
@@ -1127,527 +509,44 @@ onUnmounted(() => {
       <span v-if="hasUnreadBelow" class="to-bottom__dot" aria-hidden="true" />
     </button>
 
-    <!-- ============ 底部组合输入区（视觉融合 + 失焦折叠为一行） ============ -->
-    <div class="composer">
-      <!-- 本会话 token 累计小字（可选，弱化）：与气泡本轮口径一致，点「用量」进统计页 -->
-      <RouterLink
-        v-if="hasSessionUsage"
-        class="session-usage"
-        :to="{ name: 'usage' }"
-        title="查看用量统计"
-      >
-        📊 本会话累计 {{ fmtTokens(sessionUsage.total ?? 0) }} tokens
-        （输入 {{ fmtTokens(sessionUsage.input_hit + sessionUsage.input_miss) }} · 输出
-        {{ fmtTokens(sessionUsage.output) }}）
-      </RouterLink>
-      <div
-        ref="composerBoxRef"
-        class="composer__box"
-        :class="{
-          'composer__box--expanded': composerExpanded,
-          'composer__box--drag': dragOver,
-        }"
-        @focusin="onComposerFocusIn"
-        @focusout="onComposerFocusOut"
-        @dragenter="onDragEnter"
-        @dragover="onDragOver"
-        @dragleave="onDragLeave"
-        @drop="onDrop"
-      >
-        <!-- 拖拽放入提示遮罩：拖动文件到输入区时出现 -->
-        <div v-if="dragOver" class="dropzone" aria-hidden="true">
-          <div class="dropzone__inner">
-            <span class="dropzone__icon">⬆</span>
-            <span class="dropzone__text">松开以上传简历（PDF）</span>
-            <span class="dropzone__hint">拖放 PDF 文件到这里即可解析为简历</span>
-          </div>
-        </div>
-
-        <!-- 状态细条（onStatus 兜底，仅在无进行中工具块时出现） -->
-        <div v-if="statusLine" class="status-bar" role="status" aria-live="polite">
-          <span class="status-bar__dot" aria-hidden="true" />
-          {{ statusLine }}
-        </div>
-
-        <!-- 操作反馈浮条 -->
-        <div
-          v-if="hint"
-          class="flash"
-          :class="{ 'flash--error': hintError }"
-          role="status"
-          aria-live="polite"
-        >
-          {{ hint }}
-        </div>
-
-        <!-- 展开区：附件 chips + 各展开面板（仅展开态渲染；折叠时只留下方输入行） -->
-        <template v-if="composerExpanded">
-        <!-- 附件 chips 行 -->
-        <div class="chips">
-          <!-- 简历 -->
-          <span v-if="context.resume_text" class="chip chip--active">
-            <span class="chip__icon" aria-hidden="true">📄</span>
-            简历已添加
-            <button
-              type="button"
-              class="chip__remove"
-              title="移除简历"
-              @click="removeResume"
-            >
-              ✕
-            </button>
-          </span>
-
-          <!-- JD 数量（可展开管理） -->
-          <button
-            v-if="(context.jd_texts?.length ?? 0) > 0"
-            type="button"
-            class="chip chip--active chip--btn"
-            :aria-expanded="jdManagerOpen"
-            @click="toggleJdManager"
-          >
-            <span class="chip__icon" aria-hidden="true">🗂</span>
-            JD ×{{ context.jd_texts?.length }}
-            <span class="chip__caret" :class="{ open: jdManagerOpen }">▸</span>
-          </button>
-
-          <!-- 目标岗位 -->
-          <span v-if="context.target_role" class="chip">
-            <span class="chip__icon" aria-hidden="true">🎯</span>
-            {{ context.target_role }}
-          </span>
-
-          <!-- 周数 -->
-          <span class="chip chip--muted">
-            <span class="chip__icon" aria-hidden="true">🗓</span>
-            {{ context.weeks }} 周计划
-          </span>
-        </div>
-
-        <!-- JD 管理面板（查看 / 存入 JD 库 / 删除某条） -->
-        <div v-if="jdManagerOpen && (context.jd_texts?.length ?? 0) > 0" class="panel jd-panel">
-          <ul class="jd-list">
-            <li v-for="(jd, idx) in context.jd_texts" :key="idx" class="jd-row">
-              <span class="jd-row__index">JD {{ idx + 1 }}</span>
-              <span class="jd-row__text">{{ jd }}</span>
-              <button
-                type="button"
-                class="jd-row__save"
-                :disabled="savingJdIndex !== null"
-                title="把这条 JD 存入 JD 库，便于以后复用"
-                @click="saveJdToLibrary(idx)"
-              >
-                {{ savingJdIndex === idx ? '存入中…' : '存入 JD 库' }}
-              </button>
-              <button
-                type="button"
-                class="jd-row__remove"
-                title="删除此条 JD"
-                @click="removeJd(idx)"
-              >
-                删除
-              </button>
-            </li>
-          </ul>
-        </div>
-
-        <!-- 内联粘贴区（设为简历 / 追加 JD） -->
-        <div v-if="pasteOpen" class="panel paste-panel">
-          <textarea
-            v-model="pasteText"
-            class="field paste-panel__area"
-            rows="4"
-            placeholder="在此粘贴简历全文，或粘贴一条岗位 JD 原文……"
-          />
-          <div class="paste-panel__actions">
-            <button
-              type="button"
-              class="btn"
-              :disabled="!pasteText.trim()"
-              @click="applyPasteAsResume"
-            >
-              设为简历
-            </button>
-            <button
-              type="button"
-              class="btn"
-              :disabled="!pasteText.trim()"
-              @click="applyPasteAsJd"
-            >
-              添加为 JD
-            </button>
-            <button type="button" class="btn btn-ghost" @click="togglePaste">
-              收起
-            </button>
-          </div>
-        </div>
-
-        <!-- 分析设置（目标岗位 / 周数） -->
-        <div v-if="settingsOpen" class="panel settings-panel">
-          <label class="settings-panel__field">
-            <span class="settings-panel__label">目标岗位</span>
-            <input
-              v-model="context.target_role"
-              class="field"
-              type="text"
-              placeholder="例如：前端实习、Java 后端、数据分析"
-              autocomplete="off"
-            />
-          </label>
-          <label class="settings-panel__field settings-panel__field--weeks">
-            <span class="settings-panel__label">规划周数</span>
-            <select v-model.number="context.weeks" class="field">
-              <option v-for="n in weekOptions" :key="n" :value="n">{{ n }} 周</option>
-            </select>
-          </label>
-        </div>
-
-        <!-- 模型设置（自定义大语言模型 BYO LLM）：按会话覆盖后端 .env，配置仅存本地浏览器 -->
-        <div v-if="modelSettingsOpen" class="panel settings-panel settings-panel--model">
-          <label class="settings-panel__field settings-panel__field--provider">
-            <span class="settings-panel__label">协议</span>
-            <select v-model="llmConfig.provider" class="field">
-              <option v-for="opt in providerOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </label>
-          <label class="settings-panel__field">
-            <span class="settings-panel__label">接入点 Base URL</span>
-            <input
-              v-model="llmConfig.base_url"
-              class="field"
-              type="text"
-              placeholder="留空=官方，如 https://api.deepseek.com/v1"
-              autocomplete="off"
-            />
-          </label>
-          <label class="settings-panel__field settings-panel__field--full">
-            <span class="settings-panel__label">API Key</span>
-            <input
-              v-model="llmConfig.api_key"
-              class="field"
-              type="password"
-              placeholder="仅存本地浏览器，可留空"
-              autocomplete="off"
-            />
-            <span class="settings-panel__hint">仅存本地浏览器，不会写入会话记录</span>
-          </label>
-          <label class="settings-panel__field">
-            <span class="settings-panel__label">默认模型</span>
-            <input
-              v-model="llmConfig.model"
-              class="field"
-              type="text"
-              list="op-model-list"
-              placeholder="如 deepseek-v4-pro"
-              autocomplete="off"
-            />
-          </label>
-          <label class="settings-panel__field">
-            <span class="settings-panel__label">简历模型</span>
-            <input
-              v-model="llmConfig.model_resume"
-              class="field"
-              type="text"
-              list="op-model-list"
-              placeholder="留空＝用默认模型"
-              autocomplete="off"
-            />
-          </label>
-          <label class="settings-panel__field">
-            <span class="settings-panel__label">JD 模型</span>
-            <input
-              v-model="llmConfig.model_jd"
-              class="field"
-              type="text"
-              list="op-model-list"
-              placeholder="留空＝用默认模型"
-              autocomplete="off"
-            />
-          </label>
-          <!-- 三档输入框共享的模型候选列表（原生「下拉 + 手输」二合一） -->
-          <datalist id="op-model-list">
-            <option v-for="m in modelList" :key="m" :value="m" />
-          </datalist>
-          <!-- 刷新模型列表（顺带连通性测试）+ 状态提示 -->
-          <div class="settings-panel__field settings-panel__field--full model-refresh">
-            <button
-              type="button"
-              class="tool-btn"
-              :disabled="modelFetchState === 'loading'"
-              @click="refreshModels"
-            >
-              <span aria-hidden="true">↻</span>
-              刷新模型列表
-            </button>
-            <span
-              v-if="modelFetchState === 'loading'"
-              class="model-refresh__status"
-            >拉取中…</span>
-            <span
-              v-else-if="modelFetchState === 'ok'"
-              class="model-refresh__status model-refresh__status--ok"
-            >✓ {{ modelFetchMsg }}</span>
-            <span
-              v-else-if="modelFetchState === 'error'"
-              class="model-refresh__status model-refresh__status--error"
-            >✗ {{ modelFetchMsg }}（仍可手输）</span>
-          </div>
-        </div>
-
-        </template>
-
-        <!-- 主输入行：附件按钮 + 输入框 + 发送/停止（折叠态也保留这一行） -->
-        <div class="composer__row">
-          <button
-            type="button"
-            class="composer__attach"
-            :disabled="uploading || streaming"
-            :title="uploading ? '解析中…' : '上传简历（PDF）'"
-            aria-label="上传简历 PDF"
-            @click="triggerUpload"
-          >
-            <span v-if="uploading" class="tool-btn__spinner" aria-hidden="true" />
-            <span v-else class="composer__attach-icon" aria-hidden="true">📎</span>
-            <span
-              v-if="attachmentCount > 0 && !uploading"
-              class="composer__attach-badge"
-              :title="`已附 ${attachmentCount} 项素材`"
-            >{{ attachmentCount }}</span>
-          </button>
-          <input
-            ref="fileInput"
-            class="visually-hidden"
-            type="file"
-            accept=".pdf"
-            @change="onFileChange"
-          />
-
-          <textarea
-            ref="textareaRef"
-            v-model="input"
-            class="entry__input"
-            rows="1"
-            :disabled="streaming"
-            placeholder="给 OfferPilot 发消息，或直接发送以基于已添加素材开始分析…（Enter 发送，Shift+Enter 换行）"
-            @keydown="onKeydown"
-          />
-
-          <button
-            v-if="streaming"
-            type="button"
-            class="entry__send entry__send--stop"
-            title="停止生成"
-            @click="stop"
-          >
-            <span class="entry__stop-icon" aria-hidden="true" />
-            停止
-          </button>
-          <button
-            v-else
-            type="button"
-            class="entry__send"
-            :disabled="!canSend"
-            :aria-disabled="!canSend"
-            title="发送"
-            @click="send"
-          >
-            发送
-          </button>
-        </div>
-
-        <!-- 工具行（仅展开态渲染）：粘贴 / JD 库 / 设置 / 思考强度 -->
-        <div v-if="composerExpanded" class="composer__toolbar">
-          <button
-            type="button"
-            class="tool-btn"
-            :class="{ 'tool-btn--on': pasteOpen }"
-            :disabled="streaming"
-            :aria-expanded="pasteOpen"
-            @click="togglePaste"
-          >
-            <span aria-hidden="true">📝</span>
-            粘贴 / JD
-          </button>
-
-          <!-- JD 库：打开自包含模态，复用已保存的 JD 加入本次分析 -->
-          <button
-            type="button"
-            class="tool-btn"
-            :class="{ 'tool-btn--on': jdLibraryOpen }"
-            :aria-expanded="jdLibraryOpen"
-            title="从 JD 库选取已保存的岗位 JD 加入本次分析"
-            @click="openJdLibrary"
-          >
-            <span aria-hidden="true">🗂</span>
-            JD 库
-          </button>
-
-          <button
-            type="button"
-            class="tool-btn"
-            :class="{ 'tool-btn--on': settingsOpen }"
-            :aria-expanded="settingsOpen"
-            @click="toggleSettings"
-          >
-            <span aria-hidden="true">⚙</span>
-            分析设置
-          </button>
-
-          <!-- 模型设置：自定义大语言模型（provider / base_url / API Key / 三档模型） -->
-          <button
-            type="button"
-            class="tool-btn"
-            :class="{ 'tool-btn--on': modelSettingsOpen }"
-            :aria-expanded="modelSettingsOpen"
-            :disabled="streaming"
-            @click="toggleModelSettings"
-          >
-            <span aria-hidden="true">🧠</span>
-            模型
-          </button>
-
-          <!-- 思考强度选择器：随对话以 reasoning_effort 提交（6 档关键词标签） -->
-          <label class="effort" :title="effortTip">
-            <span class="effort__icon" aria-hidden="true">💭</span>
-            <span class="effort__label">思考</span>
-            <select v-model="reasoningEffort" class="effort__select" :disabled="streaming">
-              <option v-for="opt in effortOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-            <span class="effort__info" :title="effortTip" aria-hidden="true">ⓘ</span>
-          </label>
-
-          <!-- E3 语气滑块：仅调 AI 措辞（鼓励⟷鞭策），随对话以 context.tone 提交。
-               桌面端支持鼠标滚轮（@wheel）与方向键（原生 range 聚焦后即可）。 -->
-          <label class="tone" :title="toneTip" @wheel="onToneWheel">
-            <span class="tone__icon" aria-hidden="true">🎚️</span>
-            <span class="tone__label">语气</span>
-            <input
-              v-model.number="tone"
-              class="tone__range"
-              type="range"
-              min="0"
-              max="100"
-              step="10"
-              :disabled="streaming"
-              :aria-label="`语气强度 ${tone}/100（${toneLabel}）`"
-            />
-            <span class="tone__value">{{ toneLabel }}</span>
-          </label>
-        </div>
-      </div>
-    </div>
+    <!-- ============ 底部组合输入区（ChatComposer 子组件） ============
+         附件 chips / 粘贴 / JD 库 / 分析与模型设置 / 工具行 / 拖拽 / flash 整体内化；
+         send 不带参（本视图自读 input 组装消息），stop 中止当前流式轮次。 -->
+    <ChatComposer
+      ref="composerRef"
+      v-model="input"
+      v-model:effort="reasoningEffort"
+      v-model:tone="tone"
+      :context="context"
+      :streaming="streaming"
+      :status-line="statusLine"
+      :session-usage="sessionUsage"
+      :has-session-usage="hasSessionUsage"
+      @send="send"
+      @stop="stop"
+    />
       </div>
       <!-- /左栏 -->
 
-      <!-- 右栏：报告【紧凑摘要】面板。仅当存在最新报告且面板未隐藏时渲染；
-           宽屏 sticky，窄屏（媒体查询）回退为非 sticky 并堆叠到对话下方。
-           只展示要点（环形匹配度 + 目标岗位 + 简述），完整内容经「查看完整报告」
-           跳转 /result/:id（全展开），不再在此内联整份 AnalysisReport。 -->
+      <!-- 右栏：报告【紧凑摘要】面板（ReportSidePanel 子组件）。
+           仅当存在最新报告且面板未隐藏时渲染（v-if 开合留在本视图——面板随隐藏
+           频繁卸载，reportNav / 信号协同放子组件会断 SideNav 重开链路）；
+           宽屏 sticky，窄屏（媒体查询）回退为非 sticky 并堆叠到对话下方。 -->
       <aside v-if="latestReport && reportPanelOpen" class="chat__right">
-        <div
+        <ReportSidePanel
           ref="reportPanelRef"
-          class="report-panel"
-          :class="{ 'report-panel--flash': reportHighlight }"
-        >
-          <!-- 顶部标题（已出方案 → 学习方案为主角；否则匹配分析）+ 隐藏按钮 -->
-          <header class="report-panel__head">
-            <span class="report-panel__title">
-              <span class="report-panel__title-icon" aria-hidden="true">{{ hasPlan ? '🎓' : '📊' }}</span>
-              {{ hasPlan ? '你的学习方案' : '匹配分析' }}
-            </span>
-            <button
-              type="button"
-              class="report-panel__hide"
-              title="隐藏侧栏（聊天区占满宽度）"
-              @click="hideReportPanel"
-            >
-              隐藏
-            </button>
-          </header>
-
-          <!-- ===== 已生成学习方案：以「分周学习路线」为主产出 ===== -->
-          <template v-if="hasPlan">
-            <div class="plan">
-              <p class="plan__lead">
-                <span class="plan__weeks">{{ latestRoadmap.length }} 周</span>个性化学习路线<!--
-                --><span v-if="latestReport.result.target_role" class="plan__role">
-                  · {{ latestReport.result.target_role }}</span>
-              </p>
-              <ul class="plan__list">
-                <li v-for="w in planPreview" :key="w.week" class="plan__week">
-                  <span class="plan__week-no">第 {{ w.week }} 周</span>
-                  <span class="plan__week-focus">
-                    <template v-if="w.focus.length">{{ w.focus.join('、') }}</template>
-                    <template v-else>综合复盘 / 模拟面试</template>
-                  </span>
-                </li>
-              </ul>
-              <p v-if="latestRoadmap.length > planPreview.length" class="plan__more">
-                …共 {{ latestRoadmap.length }} 周完整计划，点下方查看
-              </p>
-            </div>
-
-            <!-- 保留匹配分析简述，维持「方案依据」的上下文（多行截断，不喧宾夺主） -->
-            <p
-              v-if="latestReport.result.summary"
-              class="report-panel__summary report-panel__summary--compact"
-            >
-              {{ latestReport.result.summary }}
-            </p>
-
-            <!-- 匹配度降为次级一行（环形 mini + 文案） -->
-            <div class="report-panel__score-row">
-              <ScoreRing :score="latestReport.result.match_score" :size="44" :stroke="5" />
-              <span class="report-panel__score-text">岗位匹配度 {{ latestReport.result.match_score }}%</span>
-            </div>
-          </template>
-
-          <!-- ===== 仅匹配分析：紧凑摘要 + 「下一步生成方案」提示 ===== -->
-          <template v-else>
-            <div class="report-panel__ring">
-              <ScoreRing :score="latestReport.result.match_score" :size="120" />
-            </div>
-            <p v-if="latestReport.result.target_role" class="report-panel__role">
-              <span class="report-panel__role-icon" aria-hidden="true">🎯</span>
-              {{ latestReport.result.target_role }}
-            </p>
-            <p v-if="latestReport.result.summary" class="report-panel__summary">
-              {{ latestReport.result.summary }}
-            </p>
-            <p class="report-panel__next">
-              <span aria-hidden="true">💡</span>
-              回答上方 AI 的几个问题后，我会据此生成你的<strong>完整分周学习方案</strong>。
-            </p>
-          </template>
-
-          <!-- 主按钮：文案随是否已出方案切换；均跳转 /result/:id 全展开 -->
-          <button type="button" class="report-panel__cta" @click="goToFullReport">
-            {{ fullReportCtaLabel }}
-            <span class="report-panel__cta-arrow" aria-hidden="true">→</span>
-          </button>
-
-          <!-- 已出方案：次级入口跳活计划页（可勾选任务 + 每日打卡），不触碰对话内核 -->
-          <RouterLink
-            v-if="hasPlan && currentRunId"
-            class="report-panel__plan-link"
-            :to="`/plan/${currentRunId}`"
-          >
-            📋 开始执行 / 每日打卡
-          </RouterLink>
-        </div>
+          :report="latestReport"
+          :has-plan="hasPlan"
+          :current-run-id="currentRunId"
+          @hide="hideReportPanel"
+          @view-full="goToFullReport"
+        />
       </aside>
     </div>
     <!-- /左右两栏外壳 -->
 
     <!-- 报告被隐藏时的重新展开入口已移到左侧边栏（SideNav 的「报告 / 学习方案」），
          统一视觉并避免原右下角悬浮角标与发送按钮重叠。 -->
-
-    <!-- JD 库（自包含模态）：composer 的「JD 库」按钮打开；选条后加入本次分析 -->
-    <JdLibrary :open="jdLibraryOpen" @close="closeJdLibrary" @use="onUseSavedJds" />
   </div>
 </template>
 
@@ -1685,183 +584,12 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-/* 右栏：报告面板容器。宽屏固定宽度，内部 sticky。 */
+/* 右栏：报告面板容器（面板卡片样式在 ReportSidePanel）。宽屏固定宽度。 */
 .chat__right {
   flex: 0 0 380px;
   min-width: 0;
   /* 与左栏顶部对齐；高度由 sticky 面板自行约束 */
   align-self: stretch;
-}
-
-/* 报告【紧凑摘要】面板：sticky 贴顶的卡片，只摆要点（不内滚整份报告）；
-   切换报告时短暂高亮。 */
-.report-panel {
-  position: sticky;
-  top: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  /* 高亮过渡：box-shadow 渐隐 */
-  transition: box-shadow 0.4s ease;
-}
-
-.report-panel--flash {
-  box-shadow: 0 0 0 3px var(--brand-soft);
-}
-
-/* 顶部小标题行：标题 + 「隐藏」按钮 */
-.report-panel__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.report-panel__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.report-panel__title-icon {
-  font-size: 0.95em;
-  line-height: 1;
-}
-
-.report-panel__hide {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    border-color var(--transition),
-    color var(--transition),
-    background var(--transition);
-}
-
-.report-panel__hide:hover {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-/* 环形匹配度：居中摆放 */
-.report-panel__ring {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-1) 0;
-}
-
-/* 目标岗位 */
-.report-panel__role {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.report-panel__role-icon {
-  flex-shrink: 0;
-  font-size: 0.95em;
-  line-height: 1;
-}
-
-/* 简述：多行截断（clamp 数行），避免把侧栏撑长 */
-.report-panel__summary {
-  margin: 0;
-  font-size: 0.88rem;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  /* 多行省略：最多 5 行 */
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* 学习方案视图下的简述：更紧凑（3 行），作为方案依据的上下文，不抢占主体 */
-.report-panel__summary--compact {
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  font-size: 0.84rem;
-  color: var(--text-muted);
-}
-
-/* 「查看完整报告」主按钮 */
-.report-panel__cta {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: var(--space-1);
-  padding: 10px 16px;
-  border: 1px solid var(--brand);
-  border-radius: var(--radius);
-  background: var(--brand);
-  color: var(--text-on-brand);
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition:
-    background var(--transition),
-    border-color var(--transition),
-    transform var(--transition);
-}
-
-.report-panel__cta:hover {
-  background: var(--brand-hover);
-  border-color: var(--brand-hover);
-}
-
-.report-panel__cta:active {
-  transform: translateY(1px);
-}
-
-.report-panel__cta-arrow {
-  font-size: 1em;
-  line-height: 1;
-}
-
-/* 次级入口：跳活计划页（开始执行 / 每日打卡） */
-.report-panel__plan-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: var(--space-2);
-  padding: 8px 14px;
-  border: 1px solid var(--brand-soft);
-  border-radius: var(--radius);
-  background: var(--brand-soft);
-  color: var(--brand-active);
-  font-size: 0.86rem;
-  font-weight: 600;
-  transition:
-    border-color var(--transition),
-    color var(--transition);
-}
-
-.report-panel__plan-link:hover {
-  border-color: var(--brand);
-  color: var(--brand);
 }
 
 /* ---------- 浮动「回到底部」按钮 ---------- */
@@ -2043,8 +771,8 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
-/* 思考过程 / 工具活动 / 打字指示 / 错误条 / 无思考提示 / token 用量小字的
-   样式已随气泡渲染整体迁入 components/chat/AssistantBlocks.vue（scoped）。 */
+/* 思考过程 / 工具活动 / 打字指示 / 错误条等气泡内样式在 AssistantBlocks.vue；
+   composer 全套样式在 ChatComposer.vue；报告面板卡片样式在 ReportSidePanel.vue。 */
 
 /* ---------- 报告引用 chip（消息流内，点击跳转右侧/下方报告面板） ---------- */
 .report-chip {
@@ -2094,806 +822,22 @@ onUnmounted(() => {
   display: none;
 }
 
-/* ===================================================================
-   底部组合输入区
-   =================================================================== */
-.composer {
-  flex-shrink: 0;
-  position: sticky;
-  bottom: 0;
-  /* 顶部渐隐过渡，避免内容硬切 */
-  background: linear-gradient(
-    to bottom,
-    rgba(246, 247, 249, 0) 0%,
-    var(--bg) 18%
-  );
-  padding-top: var(--space-3);
-}
-
-/* 本会话 token 累计小字：弱化、居中、点击进统计页 */
-.session-usage {
-  display: block;
-  margin: 0 auto var(--space-2);
-  text-align: center;
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.session-usage:hover {
-  color: var(--brand);
-}
-
-/* 融合输入盒：单一圆角容器，内含附件 / 输入 / 发送 / 工具，视觉浑然一体。
-   折叠态（未聚焦且空）只显主输入行一行；展开态显现 chips / 面板 / 工具行。 */
-.composer__box {
-  position: relative; /* 供拖拽提示遮罩定位 */
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    background 0.15s ease;
-}
-
-/* 展开态：更强阴影 + 更宽松内边距 */
-.composer__box--expanded {
-  gap: var(--space-3);
-  padding: var(--space-3);
-  box-shadow: var(--shadow-md);
-}
-
-/* 聚焦：整盒高亮描边（输入框本身无边框，焦点环落在盒上） */
-.composer__box:focus-within {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px var(--brand-soft);
-}
-
-/* 拖拽文件悬停态：高亮 + 虚线描边 */
-.composer__box--drag {
-  border-color: var(--brand);
-  border-style: dashed;
-  background: var(--brand-soft);
-  box-shadow: 0 0 0 3px var(--brand-soft);
-}
-
-/* ---------- 主输入行（附件 + 输入框 + 发送） ---------- */
-.composer__row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
-}
-
-/* 附件（上传）按钮：盒内 ghost 圆角图标按钮，带素材角标 */
-.composer__attach {
-  position: relative;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-size: 1.05rem;
-  transition:
-    border-color var(--transition),
-    color var(--transition),
-    background var(--transition);
-}
-
-.composer__attach:hover:not(:disabled) {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-.composer__attach:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.composer__attach-icon {
-  line-height: 1;
-}
-
-/* 已附素材角标 */
-.composer__attach-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-pill);
-  background: var(--brand);
-  color: var(--text-on-brand);
-  font-size: 0.66rem;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: var(--shadow-sm);
-}
-
-/* ---------- 工具行（盒内底部，仅展开态显示） ---------- */
-.composer__toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
-}
-
-/* 拖拽放入提示遮罩：覆盖整个输入区，扩大可放置范围并提示 */
-.dropzone {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-lg);
-  background: var(--brand-soft); /* 不支持 color-mix 时的回退 */
-  background: color-mix(in srgb, var(--brand-soft) 92%, transparent);
-  backdrop-filter: blur(1px);
-  pointer-events: none; /* 让拖拽事件继续命中底层容器，保证 drop 生效 */
-}
-
-.dropzone__inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-5);
-  border: 2px dashed var(--brand);
-  border-radius: var(--radius-lg);
-  color: var(--brand-active);
-  text-align: center;
-}
-
-.dropzone__icon {
-  font-size: 1.6rem;
-  line-height: 1;
-}
-
-.dropzone__text {
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.dropzone__hint {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-}
-
-/* 状态细条 */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  background: var(--brand-soft);
-  color: var(--brand-active);
-  font-size: 0.85rem;
-}
-
-.status-bar__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--brand);
-  animation: op-pulse 1.4s ease-in-out infinite;
-}
-
-/* 操作反馈浮条 */
-.flash {
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  background: var(--success-soft);
-  color: var(--success);
-  font-size: 0.85rem;
-  font-weight: 550;
-}
-
-.flash--error {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-/* ---------- 附件 chips ---------- */
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  font-weight: 550;
-  max-width: 100%;
-}
-
-.chip--active {
-  background: var(--brand-soft);
-  border-color: #c7d8ff;
-  color: var(--brand-active);
-}
-
-.chip--muted {
-  color: var(--text-muted);
-}
-
-.chip--btn {
-  cursor: pointer;
-  transition: background var(--transition);
-}
-
-.chip--btn:hover {
-  background: #e3edff;
-}
-
-.chip__icon {
-  font-size: 0.9em;
-}
-
-.chip__remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: inherit;
-  font-size: 0.7rem;
-  opacity: 0.7;
-}
-
-.chip__remove:hover {
-  background: rgba(0, 0, 0, 0.08);
-  opacity: 1;
-}
-
-.chip__caret {
-  font-size: 0.7rem;
-  transition: transform var(--transition);
-}
-
-.chip__caret.open {
-  transform: rotate(90deg);
-}
-
-/* ---------- 展开面板（JD / 粘贴 / 设置）通用 ---------- */
-.panel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-muted);
-  padding: var(--space-3);
-}
-
-/* JD 管理 */
-.jd-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.jd-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.jd-row__index {
-  flex-shrink: 0;
-  font-size: 0.78rem;
-  font-weight: 650;
-  color: var(--brand-active);
-}
-
-.jd-row__text {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.jd-row__save {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  transition:
-    border-color var(--transition),
-    color var(--transition),
-    background var(--transition);
-}
-
-.jd-row__save:hover:not(:disabled) {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-.jd-row__save:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.jd-row__remove {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.jd-row__remove:hover {
-  border-color: var(--danger);
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-
-/* 粘贴面板 */
-.paste-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.paste-panel__area {
-  background: var(--surface);
-  line-height: 1.6;
-}
-
-.paste-panel__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-/* 设置面板 */
-.settings-panel {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.settings-panel__field {
-  flex: 1;
-  min-width: 200px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.settings-panel__field--weeks {
-  flex: 0 0 140px;
-  min-width: 140px;
-}
-
-.settings-panel__label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.settings-panel .field {
-  background: var(--surface);
-}
-
-/* 模型设置面板：与「分析设置」同一栅格，但字段更多，整行铺满者占满宽度 */
-.settings-panel__field--provider {
-  flex: 0 0 160px;
-  min-width: 160px;
-}
-
-.settings-panel__field--full {
-  flex: 1 1 100%;
-  min-width: 100%;
-}
-
-/* API Key 下方的隐私小字 */
-.settings-panel__hint {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-/* 刷新模型列表行：按钮 + 状态文案同一行 */
-.model-refresh {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.model-refresh__status {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.model-refresh__status--ok {
-  color: var(--brand);
-}
-
-.model-refresh__status--error {
-  color: var(--danger);
-}
-
-/* ---------- 工具按钮（盒内工具行内） ---------- */
-.tool-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 550;
-  transition:
-    background var(--transition),
-    border-color var(--transition),
-    color var(--transition);
-}
-
-.tool-btn:hover:not(:disabled) {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-.tool-btn--on {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-.tool-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.tool-btn__spinner {
-  width: 13px;
-  height: 13px;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--brand);
-  border-radius: 50%;
-  animation: op-spin 0.7s linear infinite;
-}
-
-/* 思考强度选择器：与工具按钮同一视觉语言（ghost） */
-.effort {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 6px 4px 10px;
-  margin-left: auto; /* 推到工具行最右侧 */
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 550;
-}
-
-.effort:hover {
-  background: var(--surface-muted);
-}
-
-.effort__icon {
-  font-size: 0.9em;
-}
-
-.effort__select {
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-
-.effort__select:focus {
-  outline: none;
-}
-
-.effort__select:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-/* 说明小图标：弱化、可悬停查看 title 文案 */
-.effort__info {
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  cursor: help;
-  user-select: none;
-}
-
-.effort__info:hover {
-  color: var(--text-secondary);
-}
-
-/* ---------- E3 语气滑块 ---------- */
-.tone {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 550;
-}
-
-.tone:hover {
-  background: var(--surface-muted);
-}
-
-.tone__icon {
-  font-size: 0.9em;
-}
-
-.tone__range {
-  width: 84px;
-  accent-color: var(--brand);
-  cursor: pointer;
-}
-
-.tone__range:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.tone__value {
-  min-width: 2.6em;
-  color: var(--text);
-  font-weight: 600;
-}
-
-/* ---------- 输入框（盒内无边框，焦点环由 .composer__box 承载） ---------- */
-.entry__input {
-  flex: 1;
-  min-width: 0;
-  max-height: 180px;
-  padding: 8px 6px;
-  border: 0;
-  background: transparent;
-  line-height: 1.6;
-  resize: none;
-  overflow-y: auto;
-}
-
-.entry__input:focus {
-  outline: none;
-}
-
-.entry__input:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-
-.entry__send {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 42px;
-  padding: 0 20px;
-  border: 1px solid var(--brand);
-  border-radius: var(--radius);
-  background: var(--brand);
-  color: var(--text-on-brand);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-  transition:
-    background var(--transition),
-    border-color var(--transition),
-    opacity var(--transition),
-    transform var(--transition);
-}
-
-.entry__send:hover:not(:disabled) {
-  background: var(--brand-hover);
-  border-color: var(--brand-hover);
-}
-
-.entry__send:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.entry__send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.entry__send--stop {
-  background: var(--surface);
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.entry__send--stop:hover {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.entry__stop-icon {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: currentColor;
-}
-
-/* ---------- 隐藏的原生文件框 ---------- */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 /* ---------- 动画 ----------
    keyframes 已重命名 op-spin / op-bounce / op-pulse 并上移到 styles/main.css
    全局（scoped 会给动画名加 hash，跨组件按名引用会静默失效）。
-   降级：用户偏好减少动效时，本视图残留的动效元素全部静止
-   （气泡内动效的降级在 AssistantBlocks.vue 内各自处理）。 */
+   降级：用户偏好减少动效时，本视图残留的动效元素静止
+   （气泡 / composer 内动效的降级在各子组件内自行处理）。 */
 @media (prefers-reduced-motion: reduce) {
-  .tool-btn__spinner {
-    animation: none;
-  }
-  .status-bar__dot,
   .to-bottom__dot {
     animation: none;
   }
 }
 
-/* ---------- 侧栏：学习方案（主产出）+ 匹配度次级 ---------- */
-.plan {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.plan__lead {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.plan__weeks {
-  font-size: 1.05rem;
-  font-weight: 800;
-  color: var(--brand);
-  margin-right: 4px;
-}
-
-.plan__role {
-  color: var(--text-muted);
-}
-
-.plan__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.plan__week {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--brand);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-}
-
-.plan__week-no {
-  flex-shrink: 0;
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--brand-active);
-}
-
-.plan__week-focus {
-  min-width: 0;
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.plan__more {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-/* 匹配度次级一行（有学习方案时） */
-.report-panel__score-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: var(--space-2);
-  border-top: 1px dashed var(--border);
-}
-
-.report-panel__score-text {
-  font-size: 0.84rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-/* 「下一步生成方案」提示（仅匹配分析阶段） */
-.report-panel__next {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--brand-soft);
-  color: var(--brand-active);
-  font-size: 0.82rem;
-  line-height: 1.55;
-}
-
-.report-panel__next strong {
-  font-weight: 700;
-}
-
 /* ---------- 响应式 ---------- */
 /* 窄屏（<960px）：两栏纵向堆叠——对话在上、报告面板在下且非 sticky。
    此时放开 .chat 的固定高度，让整页随内容自然滚动（左栏不再独立内滚），
-   报告面板完整展开在对话下方，保证可用。 */
+   报告面板完整展开在对话下方，保证可用。composer / 报告面板自身的窄屏
+   降级（取消 sticky）在各自子组件的同断点媒体查询。 */
 @media (max-width: 960px) {
   .chat {
     height: auto;
@@ -2919,23 +863,10 @@ onUnmounted(() => {
     min-height: 320px;
   }
 
-  /* composer 改为静态流式排布（取消 sticky），使「对话 → composer → 报告面板」
-     按自然顺序堆叠，整页一起滚动，避免 sticky composer 浮盖下方报告。 */
-  .composer {
-    position: static;
-    /* 去掉为 sticky 准备的顶部渐隐背景，避免在流式排布下出现突兀渐变 */
-    background: transparent;
-  }
-
   /* 右栏：全宽、非 sticky、堆叠到对话下方 */
   .chat__right {
     flex: 0 0 auto;
     width: 100%;
-  }
-
-  /* 紧凑摘要面板：窄屏取消 sticky，随页面滚动堆叠在对话下方 */
-  .report-panel {
-    position: static;
   }
 
   /* chip 文案切换：隐藏「见右侧面板」，显示「见下方报告面板」 */
@@ -2953,15 +884,7 @@ onUnmounted(() => {
      故此处不再重置 .chat 固定高度，避免与堆叠布局冲突。
      气泡放宽（.bubble--user / .bubble--assistant）已随全局气泡样式
      移入 styles/main.css 的同断点媒体查询。 */
-  .composer__inner {
-    padding: var(--space-3);
-  }
-
-  .entry__send {
-    padding: 0 14px;
-  }
-
-  /* 小屏 composer 更紧凑，浮动按钮相应上移避免遮挡输入区 */
+  /* 小屏 composer 更紧凑（见 ChatComposer），浮动按钮相应上移避免遮挡输入区 */
   .to-bottom {
     bottom: 130px;
   }
