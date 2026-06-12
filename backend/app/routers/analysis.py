@@ -13,6 +13,7 @@ from ..schemas import AnalysisRunOut, AnalysisRunRequest, AnalysisSummaryOut
 from ..services import pipeline
 from ..services.journey import ensure_journey
 from ..services.materialize import materialize_tasks
+from ..services.usage import usage_context
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -42,13 +43,15 @@ def run_analysis(
         else None
     )
 
-    outcome = pipeline.run_analysis(
-        resume_text=resume_text,
-        jd_texts=jd_texts,
-        target_role=payload.target_role,
-        weeks=payload.weeks,
-        resume_structured=resume_structured,
-    )
+    # 归属本次分析的所有 LLM 调用（简历/JD/优化的 path 由 pipeline 内层补；此处只设 user_id）
+    with usage_context(user_id=user_id):
+        outcome = pipeline.run_analysis(
+            resume_text=resume_text,
+            jd_texts=jd_texts,
+            target_role=payload.target_role,
+            weeks=payload.weeks,
+            resume_structured=resume_structured,
+        )
 
     # 内联模式下新建 Resume / JobPosting 行，复用 pipeline 已解析的结构化结果
     if resume_row is None:

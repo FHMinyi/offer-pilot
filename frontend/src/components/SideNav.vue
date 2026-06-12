@@ -115,6 +115,12 @@ function goDashboard(): void {
   closeMobileSidebar()
 }
 
+// 跳转用量统计（token 用量 / 缓存命中率 / 按模型·功能汇总）。
+function goUsage(): void {
+  if (route.name !== 'usage') void router.push({ name: 'usage' })
+  closeMobileSidebar()
+}
+
 // 「报告 / 学习方案」入口（取代原 ChatView 右下角悬浮角标）：
 // 通过共享信号让 ChatView 展开并滚动高亮报告面板。仅在对话页且已有报告时显示。
 function openReport(): void {
@@ -230,6 +236,28 @@ function openReport(): void {
         @click="goDashboard"
       >
         <span aria-hidden="true">📈</span>
+      </button>
+      <!-- 用量统计入口（token 用量 / 缓存命中率） -->
+      <button
+        v-if="!effectiveCollapsed"
+        type="button"
+        class="foot-link"
+        :class="{ 'foot-link--active': route.name === 'usage' }"
+        title="token 用量与缓存命中率统计"
+        @click="goUsage"
+      >
+        <span class="foot-link__icon" aria-hidden="true">📊</span>
+        用量
+      </button>
+      <button
+        v-else
+        type="button"
+        class="rail-btn rail-btn--foot"
+        title="用量统计"
+        aria-label="用量统计"
+        @click="goUsage"
+      >
+        <span aria-hidden="true">📊</span>
       </button>
       <button
         v-if="!effectiveCollapsed"

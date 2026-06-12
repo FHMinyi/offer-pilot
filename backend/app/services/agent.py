@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import AnalysisRun, JobPosting, Resume
-from . import llm, pipeline, search
+from . import llm, pipeline, search, usage
 from .journey import ensure_journey
 from .materialize import materialize_tasks
 
@@ -247,82 +247,99 @@ def run_turn(
     # 本轮状态：是否已做过匹配分析、是否已向用户输出过文字
     did_analyze = False
     spoke = False
-    try:
-        for _ in range(_MAX_STEPS):
-            final: dict | None = None
-            for ev in llm.agent_stream(llm_messages, TOOLS, reasoning_effort):
-                if ev["type"] == "reasoning":
-                    # “关闭”时即使模型仍产出思考内容（如总是思考的 reasoner），也不展示
-                    if reasoning_effort != "off":
-                        yield ("reasoning", {"text": ev["text"]})
-                elif ev["type"] == "delta":
-                    spoke = True
-                    yield ("delta", {"text": ev["text"]})
-                elif ev["type"] == "tool_pending":
-                    # 模型开始生成工具调用（参数可能较长且不可见）——立刻给出反馈填补空窗
-                    yield ("status", {"phase": "tool", "message": _tool_pending_label(ev.get("name", ""))})
-                elif ev["type"] == "final":
-                    final = ev
-            if final is None:
-                break
-
-            if final["finish"] == "tool_calls" and final["tool_calls"]:
-                llm_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": final["content"] or None,
-                        "tool_calls": [
-                            {
-                                "id": t["id"],
-                                "type": "function",
-                                "function": {"name": t["name"], "arguments": t["arguments"] or "{}"},
-                            }
-                            for t in final["tool_calls"]
-                        ],
-                    }
-                )
-                stop_turn = False
-                for t in final["tool_calls"]:
-                    # 硬性流程约束：匹配分析后【同一轮】不得直接生成学习计划，
-                    # 必须先停下让用户回答关键问题（跨轮回答后才允许）。
-                    if t["name"] == "generate_plan" and did_analyze:
-                        llm_messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": t["id"],
-                                "content": (
-                                    "本轮请先向用户提出关键问题并【停下等待用户在新消息中回答】，"
-                                    "不要在 analyze_match 的同一轮内生成学习计划。"
-                                ),
-                            }
-                        )
-                        stop_turn = True
-                        continue
-                    if t["name"] == "analyze_match":
-                        did_analyze = True
-                    yield from _dispatch_tool(t, context, db, llm_messages, user_id)
-                if stop_turn:
-                    # 兜底：若本轮模型没说任何话（仅想直接生成计划），补上反问，避免对话卡住
-                    if not spoke:
-                        yield (
-                            "delta",
-                            {
-                                "text": (
-                                    "在生成学习路线前，想先了解几点：\n"
-                                    "1) 你每周大概能投入多少小时？\n"
-                                    "2) 距离目标到岗 / 截止还有几周？\n"
-                                    "3) 偏好的学习方式（项目驱动 / 看视频 / 刷题）？\n"
-                                    "4) 最想优先补强或深入哪些方向？\n"
-                                    "5) 有没有可以改造、写进简历的现成项目？"
-                                )
-                            },
-                        )
+    # 本轮 token 累加 + 归属：用 user_id 标记本轮所有 LLM 调用（path 由 chat 路由设为 chat）。
+    # turn_accumulator 收集多步调用的 token，循环结束后用一条 usage 事件汇报给前端气泡。
+    with usage.turn_accumulator() as get_turn, usage.usage_context(user_id=user_id):
+        try:
+            for _ in range(_MAX_STEPS):
+                final: dict | None = None
+                for ev in llm.agent_stream(llm_messages, TOOLS, reasoning_effort):
+                    if ev["type"] == "reasoning":
+                        # “关闭”时即使模型仍产出思考内容（如总是思考的 reasoner），也不展示
+                        if reasoning_effort != "off":
+                            yield ("reasoning", {"text": ev["text"]})
+                    elif ev["type"] == "delta":
+                        spoke = True
+                        yield ("delta", {"text": ev["text"]})
+                    elif ev["type"] == "tool_pending":
+                        # 模型开始生成工具调用（参数可能较长且不可见）——立刻给出反馈填补空窗
+                        yield ("status", {"phase": "tool", "message": _tool_pending_label(ev.get("name", ""))})
+                    elif ev["type"] == "final":
+                        final = ev
+                if final is None:
                     break
-                continue  # 带着工具结果再让模型继续
-            break
-    except Exception as exc:  # noqa: BLE001
-        yield ("error", {"message": f"对话生成失败：{exc}"})
-        return
+
+                if final["finish"] == "tool_calls" and final["tool_calls"]:
+                    llm_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": final["content"] or None,
+                            "tool_calls": [
+                                {
+                                    "id": t["id"],
+                                    "type": "function",
+                                    "function": {"name": t["name"], "arguments": t["arguments"] or "{}"},
+                                }
+                                for t in final["tool_calls"]
+                            ],
+                        }
+                    )
+                    stop_turn = False
+                    for t in final["tool_calls"]:
+                        # 硬性流程约束：匹配分析后【同一轮】不得直接生成学习计划，
+                        # 必须先停下让用户回答关键问题（跨轮回答后才允许）。
+                        if t["name"] == "generate_plan" and did_analyze:
+                            llm_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": t["id"],
+                                    "content": (
+                                        "本轮请先向用户提出关键问题并【停下等待用户在新消息中回答】，"
+                                        "不要在 analyze_match 的同一轮内生成学习计划。"
+                                    ),
+                                }
+                            )
+                            stop_turn = True
+                            continue
+                        if t["name"] == "analyze_match":
+                            did_analyze = True
+                        yield from _dispatch_tool(t, context, db, llm_messages, user_id)
+                    if stop_turn:
+                        # 兜底：若本轮模型没说任何话（仅想直接生成计划），补上反问，避免对话卡住
+                        if not spoke:
+                            yield (
+                                "delta",
+                                {
+                                    "text": (
+                                        "在生成学习路线前，想先了解几点：\n"
+                                        "1) 你每周大概能投入多少小时？\n"
+                                        "2) 距离目标到岗 / 截止还有几周？\n"
+                                        "3) 偏好的学习方式（项目驱动 / 看视频 / 刷题）？\n"
+                                        "4) 最想优先补强或深入哪些方向？\n"
+                                        "5) 有没有可以改造、写进简历的现成项目？"
+                                    )
+                                },
+                            )
+                        break
+                    continue  # 带着工具结果再让模型继续
+                break
+        except Exception as exc:  # noqa: BLE001
+            yield ("error", {"message": f"对话生成失败：{exc}"})
+            return
+
+        # 本轮结束：汇报累加的 token 用量（供前端气泡显示）。total 为 0（未走真实 LLM）时也发，
+        # 前端可据此选择不展示；done 之前发，保证 usage 在收尾事件前到达。
+        turn = get_turn()
+        if turn["total"] > 0:
+            yield (
+                "usage",
+                {
+                    "input_hit": turn["input_hit"],
+                    "input_miss": turn["input_miss"],
+                    "output": turn["output"],
+                    "total": turn["total"],
+                },
+            )
 
     yield ("done", {})
 

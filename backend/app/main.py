@@ -26,6 +26,7 @@ from .routers import (
     saved_jds,
     skills,
     tasks,
+    usage,
 )
 
 settings = get_settings()
@@ -80,6 +81,7 @@ app.include_router(progress.router)
 app.include_router(interviews.router)
 app.include_router(mastery.router)
 app.include_router(llm.router)
+app.include_router(usage.router)
 
 
 @app.get("/api/health", tags=["meta"])

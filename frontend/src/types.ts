@@ -219,7 +219,13 @@ export type PersistedBlock =
  */
 export type PersistedTurn =
   | { role: 'user'; text: string }
-  | { role: 'assistant'; blocks: PersistedBlock[]; noThinking?: boolean; error?: string }
+  | {
+      role: 'assistant'
+      blocks: PersistedBlock[]
+      noThinking?: boolean
+      error?: string
+      usage?: TurnUsage // 本轮 token 用量（气泡小字 + 续聊重算会话累计）
+    }
 
 /**
  * 会话持久化上下文：随会话一并存盘的简历/JD/目标岗位等信息，
@@ -472,4 +478,75 @@ export interface QuizGenerateOut {
   task_id: number
   questions: MasteryQuestion[]
   available: boolean // false=未配置 LLM，前端引导走「我已掌握」手动标记
+}
+
+// ===================================================================
+//  token 用量统计子系统（snake_case 严格镜像后端，端到端唯一口径）
+//  三类 token 全链路统一命名：input_hit / input_miss / output（绝不出现 cached/uncached）。
+//  命中率 = input_hit/(input_hit+input_miss)，分母 0 时前端显示 "—"（后端不返回 hit_rate）。
+// ===================================================================
+
+/** 本轮对话 token 用量（SSE usage 事件载荷；total 由后端算好一并下发）。 */
+export interface TurnUsage {
+  input_hit: number // 命中缓存的输入 token
+  input_miss: number // 未命中缓存的输入 token
+  output: number // 输出 token
+  total?: number // = input_hit + input_miss + output（SSE 带，历史回放可缺省）
+}
+
+/** 时间粒度三档：day 过去 24h 按本地整点小时 / week 过去 7 天 / month 过去 30 天。 */
+export type UsageGranularity = 'day' | 'week' | 'month'
+
+/** 聚合维度：none 总计 / model 按模型 / path 按功能。 */
+export type UsageGroupBy = 'none' | 'model' | 'path'
+
+/** 图表指标（纯前端切换，不上送后端）：tokens token 用量 / hitRate 缓存命中率%。 */
+export type UsageMetric = 'tokens' | 'hitRate'
+
+/** 真实 LLM 业务路径（6 条；gap_analysis/roadmap 纯规则无 LLM，不在此列）。 */
+export type UsagePath = 'chat' | 'resume' | 'jd' | 'optimize' | 'blindspot' | 'mastery'
+
+/** 单个时间桶的三类 token 计数（不含 total/hit_rate）。 */
+export interface UsageBucket {
+  bucket_start: string // ISO 字符串，对齐全局共享桶轴
+  input_hit: number
+  input_miss: number
+  output: number
+}
+
+/** 一条时序序列（group_by=none 时长度=1，key="all"/label="全部"）。 */
+export interface UsageSeries {
+  key: string
+  label: string
+  provider: string // by_path 时为空字符串
+  buckets: UsageBucket[] // 与 bucket_starts 逐桶对齐、连续补零
+}
+
+/** 时序聚合返回：共享桶轴 + 多序列（每序列 buckets 与 bucket_starts 逐桶对齐）。 */
+export interface UsageTimeseries {
+  granularity: UsageGranularity
+  group_by: UsageGroupBy
+  bucket_starts: string[] // 全局共享桶轴（ISO）
+  series: UsageSeries[]
+}
+
+/** 汇总分组统计行（by_model/by_path 同构复用；不含 hit_rate）。 */
+export interface UsageGroupStat {
+  key: string
+  label: string
+  provider: string // by_path 时为空字符串
+  input_hit: number
+  input_miss: number
+  output: number
+  calls: number // 调用次数
+}
+
+/** 用量汇总返回：总计 + 按模型/按功能分组（空库 → 全 0 + 空数组）。 */
+export interface UsageSummary {
+  total_input_hit: number
+  total_input_miss: number
+  total_output: number
+  total_calls: number
+  by_model: UsageGroupStat[] // 建议按 input_miss 降序（最该优化的浮顶）
+  by_path: UsageGroupStat[] // provider 为空
 }

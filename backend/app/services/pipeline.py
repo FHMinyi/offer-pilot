@@ -12,7 +12,7 @@ import concurrent.futures as cf
 import contextvars
 from collections.abc import Iterator
 
-from . import gap_analysis, jd_parser, llm, optimizer, resume_parser, roadmap
+from . import gap_analysis, jd_parser, llm, optimizer, resume_parser, roadmap, usage
 
 
 def run_analysis(
@@ -65,15 +65,20 @@ def _parse_inputs_streaming(
     with cf.ThreadPoolExecutor(max_workers=min(6, 1 + n)) as ex:
         # 每个 submit 用独立的上下文副本运行：contextvars 不会自动传到子线程，
         # 且同一 Context 不能被多线程并发 run，故各自 copy_context()，让 LLM 覆盖在解析阶段也生效
-        resume_future = (
-            None
-            if reuse_resume
-            else ex.submit(contextvars.copy_context().run, resume_parser.parse_resume, resume_text)
-        )
-        jd_futures = {
-            ex.submit(contextvars.copy_context().run, jd_parser.parse_jd, t): i
-            for i, t in enumerate(jd_texts)
-        }
+        # 在 submit 这一刻 copy_context() 才会快照当前归属上下文，故 path 标签必须在外层设置：
+        # 简历解析归 path=resume，JD 解析归 path=jd（user_id 由更外层路由设好，此处不覆盖）。
+        if reuse_resume:
+            resume_future = None
+        else:
+            with usage.usage_context(path="resume"):
+                resume_future = ex.submit(
+                    contextvars.copy_context().run, resume_parser.parse_resume, resume_text
+                )
+        with usage.usage_context(path="jd"):
+            jd_futures = {
+                ex.submit(contextvars.copy_context().run, jd_parser.parse_jd, t): i
+                for i, t in enumerate(jd_texts)
+            }
         parsed_jds: list[dict] = [None] * n  # type: ignore[list-item]
         done = 0
         for fut in cf.as_completed(jd_futures):
@@ -125,7 +130,8 @@ def analyze_match_streaming(
     gap = gap_analysis.analyze(resume, parsed_jds)
 
     yield ("status", "正在生成简历优化建议…")
-    suggestions = optimizer.suggest(resume, gap, parsed_jds, target_role)
+    with usage.usage_context(path="optimize"):
+        suggestions = optimizer.suggest(resume, gap, parsed_jds, target_role)
 
     job_profile = _build_job_profile(parsed_jds)
     match_score = gap["match_score"]

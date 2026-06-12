@@ -20,6 +20,11 @@
   --danger: #dc2626;
   --danger-soft: #fdeaea;
 
+  /* token 用量三色（统计页 / 图表）：命中=绿 / 未命中=橙 / 输出=主色 */
+  --tok-hit: var(--success);
+  --tok-miss: var(--warning);
+  --tok-output: var(--brand);
+
   /* 中性色 */
   --bg: #f6f7f9; /* 页面背景 */
   --surface: #ffffff; /* 卡片/容器底色 */

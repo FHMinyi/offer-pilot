@@ -25,6 +25,7 @@ from ..schemas import (
     TaskOut,
 )
 from ..services.interview import extract_blind_spots, reweight_from_blind_spots
+from ..services.usage import usage_context
 
 logger = logging.getLogger("offerpilot.interviews")
 
@@ -52,7 +53,12 @@ def create_interview(
     if journey is not None and journey.analysis_run_id is not None:
         run = db.get(AnalysisRun, journey.analysis_run_id)
 
-    spots = extract_blind_spots(payload.content, run)
+    with usage_context(
+        path="blindspot",
+        user_id=user_id,
+        analysis_run_id=journey.analysis_run_id if journey is not None else None,
+    ):
+        spots = extract_blind_spots(payload.content, run)
 
     log = InterviewLog(
         user_id=user_id,

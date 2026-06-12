@@ -12,7 +12,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)
 ![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688.svg)
-![tests](https://img.shields.io/badge/backend_tests-92_passed-16a34a.svg)
+![tests](https://img.shields.io/badge/backend_tests-132_passed-16a34a.svg)
 
 ---
 
@@ -135,7 +135,7 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
                  │  闭环服务：ensure_journey → materialize(幂等) → replan(顺延/重组/降权)    │
                  │  tasks / checkins / journey / progress 路由（实时聚合，无定时任务）       │
                  └───────────────────────────────────┬──────────────────────────────────────┘
-                                              SQLite / PostgreSQL（9 表）
+                                              SQLite / PostgreSQL（11 表）
 ```
 
 **里程碑一地基（薄切多租户接缝 + 守门）**：所有闭环表 day-one 带 `user_id String(64)`，
@@ -163,13 +163,16 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 | POST | `/api/journey/{id}/replan` | **动态再规划**（顺延/重组/降权） |
 | GET | `/api/progress` | 进度聚合（完成率 / streak / 周进度 / 最近 7 天热力） |
 | POST · GET | `/api/interviews` | **面经复盘 → 盲区提取 → 权重回灌**（碰壁期闭环） |
+| POST · GET | `/api/mastery/feynman` · `/api/mastery/quiz/*` · `/api/mastery` | **费曼讲解 / 出题判定 → 真掌握 ⭐**（点勾升级） |
+| POST | `/api/llm/models` | BYO LLM：从所填端点拉取可用模型列表 |
+| GET | `/api/usage/timeseries` · `/api/usage/summary` | token 用量统计（按模型/功能/缓存命中分桶） |
 | GET | `/api/health` | 健康检查（含当前解析引擎） |
 
 启动后端后，交互式文档见 http://localhost:7968/docs 。
 
 ---
 
-## 数据模型（9 表 · SQLite 默认）
+## 数据模型（11 表 · SQLite 默认）
 
 | 表 | 作用 |
 |---|---|
@@ -179,15 +182,17 @@ merge-upsert，保留用户已完成进度，roadmap 删项软删而非物删，
 | `tasks` | roadmap 物化的可勾选任务：四态 status、weight、`planned_date`、`order_index` |
 | `check_ins` | 每日打卡：`(user_id, date)` 唯一、upsert、引用 `Task.id` 稳定主键 |
 | `interview_logs` | 面经复盘：复盘原文 + 提取出的盲区（用于权重回灌） |
+| `mastery_checks` | 费曼/出题判定记录：判定方式、得分、反馈（「真掌握 ⭐」凭据） |
+| `token_usages` | LLM token 用量明细：输入命中/未命中缓存、输出，按模型与功能路径落库 |
 
-闭环表（`journey_states` / `tasks` / `check_ins` / `interview_logs`）均 day-one 带 `user_id`，与未来真实账号同形。
+闭环表（`journey_states` / `tasks` / `check_ins` / `interview_logs` / `mastery_checks`）均 day-one 带 `user_id`，与未来真实账号同形。
 
 ---
 
 ## 测试
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q     # 规则模式离线端到端 + 闭环/再规划/人设/面经回灌，92 passed
+cd backend && .venv/bin/python -m pytest -q     # 规则模式离线端到端 + 闭环/再规划/人设/面经回灌/用量统计，132 passed
 cd frontend && npm run build                      # vue-tsc 类型检查 + vite 构建
 ```
 

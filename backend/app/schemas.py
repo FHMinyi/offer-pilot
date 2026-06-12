@@ -487,3 +487,61 @@ class MasteryJudgeOut(BaseModel):
     available: bool = True  # 是否走了真实 AI 判定（False=降级，引导手动标记）
     boosted_tasks: list[TaskOut] = Field(default_factory=list)
     unmatched_skills: list[BlindSpotItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Token 用量统计子系统：时间序列 + 汇总。全链路统一命名 input_hit/input_miss/output
+# （不含 cached/uncached）。命中率 = input_hit/(input_hit+input_miss)，分母 0 时前端
+# 显示 "—"，故后端【不返回】hit_rate 字段，由前端按需计算。
+# ---------------------------------------------------------------------------
+
+UsageGranularity = Literal["day", "week", "month"]
+UsageGroupBy = Literal["none", "model", "path"]
+# 6 条真实 LLM 业务路径（gap_analysis/roadmap 是纯规则、无 LLM，不在此列）
+UsagePath = Literal["chat", "resume", "jd", "optimize", "blindspot", "mastery"]
+
+
+class UsageBucket(BaseModel):
+    """时间序列单桶三类 token（不含 total/hit_rate）。"""
+
+    bucket_start: str  # ISO 字符串（UTC，带 +00:00）
+    input_hit: int
+    input_miss: int
+    output: int
+
+
+class UsageSeries(BaseModel):
+    """一条序列（group_by=none 时长度为 1：key='all'）。buckets 与全局桶轴逐桶对齐。"""
+
+    key: str
+    label: str
+    provider: str = ""
+    buckets: list[UsageBucket] = Field(default_factory=list)
+
+
+class UsageTimeseriesOut(BaseModel):
+    granularity: UsageGranularity
+    group_by: UsageGroupBy
+    bucket_starts: list[str] = Field(default_factory=list)  # 全局共享桶轴（ISO）
+    series: list[UsageSeries] = Field(default_factory=list)
+
+
+class UsageGroupStat(BaseModel):
+    """汇总分组（by_model / by_path 同构复用，不含 hit_rate）。by_path 的 provider 为空。"""
+
+    key: str
+    label: str
+    provider: str = ""
+    input_hit: int
+    input_miss: int
+    output: int
+    calls: int
+
+
+class UsageSummaryOut(BaseModel):
+    total_input_hit: int
+    total_input_miss: int
+    total_output: int
+    total_calls: int
+    by_model: list[UsageGroupStat] = Field(default_factory=list)
+    by_path: list[UsageGroupStat] = Field(default_factory=list)

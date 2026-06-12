@@ -44,6 +44,7 @@ import type {
   PersistedTurn,
   ReasoningEffort,
   SearchResultItem,
+  TurnUsage,
   WeekItem,
 } from '../types'
 import JdLibrary from '../components/JdLibrary.vue'
@@ -105,6 +106,8 @@ interface AssistantTurn {
   effort?: ReasoningEffort
   // 本轮结束后置位：发起时强度 !== 'off' 但模型未输出任何 reasoning 块。
   noThinking?: boolean
+  // 本轮 token 用量（SSE usage 事件到达后置位）：气泡小字展示输入(命中)/输出。
+  usage?: TurnUsage
 }
 type ChatTurn = UserTurn | AssistantTurn
 
@@ -199,6 +202,30 @@ const conversationId = ref<number | null>(null)
 // 最近一次匹配分析的 id（来自 report 事件）。随请求 context 回传，
 // 供第二步 generate_plan 跨轮定位本次匹配分析。
 const currentRunId = ref<number | null>(null)
+
+// ---------- 本会话 token 用量累计 ----------
+// 每轮 SSE usage 事件累加到此（input_hit/input_miss/output/total）；
+// 续聊加载历史会话时从各轮 usage 重算。供「全链路统一口径」展示本会话累计。
+const sessionUsage = ref<TurnUsage>({ input_hit: 0, input_miss: 0, output: 0, total: 0 })
+
+// 把一轮 usage 累加进累计值（纯函数，便于 reduce 重算历史）。
+function addUsage(acc: TurnUsage, e: TurnUsage): TurnUsage {
+  const input_hit = acc.input_hit + (e.input_hit || 0)
+  const input_miss = acc.input_miss + (e.input_miss || 0)
+  const output = acc.output + (e.output || 0)
+  return { input_hit, input_miss, output, total: input_hit + input_miss + output }
+}
+
+// token 数 k 缩写：<1000 原样；≥1000 显示「x.xk」（去掉多余 0）。
+function fmtTokens(n: number): string {
+  const v = Number.isFinite(n) ? n : 0
+  if (v < 1000) return String(v)
+  const k = v / 1000
+  return `${k >= 100 ? Math.round(k) : Number(k.toFixed(1))}k`
+}
+
+// 本会话累计是否有数据（决定是否展示累计小字）。
+const hasSessionUsage = computed(() => (sessionUsage.value.total ?? 0) > 0)
 
 // 路由：读取 query.c 以支持「历史续聊」（进入 /?c=<id> 加载该会话续聊）。
 const route = useRoute()
@@ -849,6 +876,11 @@ async function runChat(
           result: e.result,
         })
       },
+      // 本轮 token 用量 → 记到该条消息（气泡小字）并累加到本会话累计
+      onUsage: (e) => {
+        assistant.usage = e
+        sessionUsage.value = addUsage(sessionUsage.value, e)
+      },
       // 出错 → 记录到该条消息，模板内展示错误条 + 重试
       onError: (e) => {
         assistant.error = e.message || '对话出错，请重试。'
@@ -926,6 +958,7 @@ function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
     const turn: PersistedTurn = { role: 'assistant', blocks }
     if (t.noThinking) turn.noThinking = true
     if (t.error) turn.error = t.error
+    if (t.usage) turn.usage = t.usage // 本轮 token 用量随会话存盘
     return turn
   })
 }
@@ -974,6 +1007,7 @@ function deserializeTurns(list: PersistedTurn[]): ChatTurn[] {
       // 历史回合不保留瞬态的展开态，统一以收起态还原（用户可手动展开回看）
       reasoningOpen: {},
       noThinking: t.noThinking,
+      usage: t.usage, // 还原本轮 token 用量（气泡小字 + 会话累计重算）
     }
   })
 }
@@ -1003,6 +1037,11 @@ async function loadConversation(id: number): Promise<void> {
     // 还原对话消息
     const restored = deserializeTurns(detail.turns)
     turns.splice(0, turns.length, ...restored)
+    // 从各轮 usage 重算本会话 token 累计（续聊恢复全链路口径）
+    sessionUsage.value = restored.reduce<TurnUsage>(
+      (acc, t) => (t.role === 'assistant' && t.usage ? addUsage(acc, t.usage) : acc),
+      { input_hit: 0, input_miss: 0, output: 0, total: 0 },
+    )
     // 还原续聊上下文（简历 / JD / 目标岗位 / 周数）
     const ctx = detail.context ?? {}
     context.resume_text =
@@ -1031,6 +1070,7 @@ async function loadConversation(id: number): Promise<void> {
     turns.splice(0, turns.length)
     conversationId.value = null
     currentRunId.value = null
+    sessionUsage.value = { input_hit: 0, input_miss: 0, output: 0, total: 0 }
     if (route.query.c != null) void router.replace('/')
   } finally {
     loadingConversation.value = false
@@ -1090,6 +1130,7 @@ function newConversation(): void {
   turns.splice(0, turns.length)
   conversationId.value = null
   currentRunId.value = null
+  sessionUsage.value = { input_hit: 0, input_miss: 0, output: 0, total: 0 }
   statusLine.value = ''
   atBottom.value = true
   hasUnreadBelow.value = false
@@ -1265,7 +1306,7 @@ function showWorking(a: AssistantTurn): boolean {
 // 报告块改在右侧面板展示（消息流里仅留引用 chip），故气泡是否出现只看
 // 「非报告 block / 流式 / 错误 / 无思考提示」。
 function hasBubble(a: AssistantTurn): boolean {
-  if (a.streaming || a.error || a.noThinking) return true
+  if (a.streaming || a.error || a.noThinking || a.usage) return true
   return a.blocks.some((b) => b.kind !== 'report')
 }
 
@@ -1537,6 +1578,18 @@ onUnmounted(() => {
                 <p v-if="turn.noThinking" class="no-thinking">
                   （当前模型本轮未输出思考过程）
                 </p>
+
+                <!-- 本轮 token 用量小字：输入(命中+未命中)（缓存命中）· 输出。
+                     口径与统计页一致：input_hit/input_miss/output，数字 k 缩写。 -->
+                <p
+                  v-if="turn.usage"
+                  class="usage-line"
+                  :title="`本轮 token：输入 ${turn.usage.input_hit + turn.usage.input_miss}（缓存命中 ${turn.usage.input_hit}）· 输出 ${turn.usage.output}`"
+                >
+                  📊 输入 {{ fmtTokens(turn.usage.input_hit + turn.usage.input_miss) }}（缓存
+                  {{ fmtTokens(turn.usage.input_hit) }}）· 输出
+                  {{ fmtTokens(turn.usage.output) }}
+                </p>
               </div>
 
               <!-- 报告引用 chip：报告改在右侧面板展示，消息流里仅留紧凑引用。
@@ -1579,6 +1632,17 @@ onUnmounted(() => {
 
     <!-- ============ 底部组合输入区（视觉融合 + 失焦折叠为一行） ============ -->
     <div class="composer">
+      <!-- 本会话 token 累计小字（可选，弱化）：与气泡本轮口径一致，点「用量」进统计页 -->
+      <RouterLink
+        v-if="hasSessionUsage"
+        class="session-usage"
+        :to="{ name: 'usage' }"
+        title="查看用量统计"
+      >
+        📊 本会话累计 {{ fmtTokens(sessionUsage.total ?? 0) }} tokens
+        （输入 {{ fmtTokens(sessionUsage.input_hit + sessionUsage.input_miss) }} · 输出
+        {{ fmtTokens(sessionUsage.output) }}）
+      </RouterLink>
       <div
         ref="composerBoxRef"
         class="composer__box"
@@ -2756,6 +2820,15 @@ onUnmounted(() => {
   font-style: italic;
 }
 
+/* 本轮 token 用量小字：弱化、与气泡其余内容拉开一点距离 */
+.usage-line {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
 /* ---------- 报告引用 chip（消息流内，点击跳转右侧/下方报告面板） ---------- */
 .report-chip {
   display: inline-flex;
@@ -2818,6 +2891,20 @@ onUnmounted(() => {
     var(--bg) 18%
   );
   padding-top: var(--space-3);
+}
+
+/* 本会话 token 累计小字：弱化、居中、点击进统计页 */
+.session-usage {
+  display: block;
+  margin: 0 auto var(--space-2);
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-usage:hover {
+  color: var(--brand);
 }
 
 /* 融合输入盒：单一圆角容器，内含附件 / 输入 / 发送 / 工具，视觉浑然一体。

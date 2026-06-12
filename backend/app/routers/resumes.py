@@ -8,17 +8,24 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_current_user
 from ..models import Resume
 from ..schemas import ResumeOut, ResumeParseRequest
 from ..services import resume_parser
+from ..services.usage import usage_context
 
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
 
 @router.post("/parse", response_model=ResumeOut)
-def parse_resume(payload: ResumeParseRequest, db: Session = Depends(get_db)) -> Resume:
+def parse_resume(
+    payload: ResumeParseRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+) -> Resume:
     """解析粘贴的简历文本并保存。"""
-    structured = resume_parser.parse_resume(payload.raw_text)
+    with usage_context(path="resume", user_id=user_id):
+        structured = resume_parser.parse_resume(payload.raw_text)
     resume = Resume(raw_text=payload.raw_text, structured=structured, source_type="paste")
     db.add(resume)
     db.commit()
@@ -27,7 +34,11 @@ def parse_resume(payload: ResumeParseRequest, db: Session = Depends(get_db)) -> 
 
 
 @router.post("/upload", response_model=ResumeOut)
-def upload_resume(file: UploadFile = File(...), db: Session = Depends(get_db)) -> Resume:
+def upload_resume(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+) -> Resume:
     """上传 PDF 简历，抽取文本并解析保存。"""
     filename = (file.filename or "").lower()
     if not filename.endswith(".pdf"):
@@ -41,7 +52,8 @@ def upload_resume(file: UploadFile = File(...), db: Session = Depends(get_db)) -
             detail="未能从 PDF 中提取到文本，可能是扫描件或图片型 PDF，请改用粘贴方式。",
         )
 
-    structured = resume_parser.parse_resume(text)
+    with usage_context(path="resume", user_id=user_id):
+        structured = resume_parser.parse_resume(text)
     resume = Resume(raw_text=text, structured=structured, source_type="pdf")
     db.add(resume)
     db.commit()

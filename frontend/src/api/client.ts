@@ -34,6 +34,11 @@ import type {
   SkillGraph,
   Task,
   TaskPatch,
+  TurnUsage,
+  UsageGranularity,
+  UsageGroupBy,
+  UsageSummary,
+  UsageTimeseries,
 } from '../types'
 import { deviceHeaders } from '../shared/device'
 import { localTodayIso } from '../shared/journey'
@@ -288,6 +293,8 @@ export interface ChatStreamHandlers {
   onSearchResults?: (e: { id: string; query: string; results: SearchResultItem[] }) => void
   /** 结构化分析报告（渲染为报告卡） */
   onReport?: (e: { analysis_run_id: number; result: AnalysisResult }) => void
+  /** 本轮 token 用量（input_hit/input_miss/output/total）：气泡小字 + 会话累计 */
+  onUsage?: (e: TurnUsage) => void
   /** 出错 */
   onError?: (e: { message: string }) => void
   /** 本轮结束 */
@@ -381,6 +388,9 @@ export async function streamChat(
         handlers.onReport?.(
           data as { analysis_run_id: number; result: AnalysisResult },
         )
+        break
+      case 'usage':
+        handlers.onUsage?.(data as TurnUsage)
         break
       case 'error':
         handlers.onError?.(data as { message: string })
@@ -611,4 +621,48 @@ export async function masterTask(taskId: number, today?: string): Promise<Task> 
 export async function listMasteryChecks(): Promise<MasteryCheck[]> {
   const res = await apiFetch('/api/mastery')
   return handle<MasteryCheck[]>(res)
+}
+
+// ===================================================================
+//  token 用量统计子系统
+//  两端点都按设备过滤（X-Device-Id 由 apiFetch 自动带）；空库永远 200。
+// ===================================================================
+
+/** 用量筛选条件（三端点共用；空值由 qs() 自动丢弃）。 */
+export interface UsageFilters {
+  group_by?: UsageGroupBy
+  path?: string
+  model?: string
+  provider?: string
+}
+
+/**
+ * 拉取用量时序聚合。
+ * 自动带 tz_offset = 本地时区偏移分钟数取负（getTimezoneOffset() 的相反数；东八区得 +480），
+ * 让后端按浏览器本地时间落桶（本地整点小时 / 本地自然日）。
+ */
+export async function fetchUsageTimeseries(
+  granularity: UsageGranularity = 'day',
+  q: UsageFilters = {},
+): Promise<UsageTimeseries> {
+  const tzOffset = -new Date().getTimezoneOffset()
+  const res = await apiFetch(
+    `/api/usage/timeseries${qs({
+      granularity,
+      tz_offset: tzOffset,
+      group_by: q.group_by,
+      path: q.path,
+      model: q.model,
+      provider: q.provider,
+    })}`,
+  )
+  return handle<UsageTimeseries>(res)
+}
+
+/** 拉取用量汇总（总计 + 按模型/按功能分组）。 */
+export async function fetchUsageSummary(q: UsageFilters = {}): Promise<UsageSummary> {
+  const res = await apiFetch(
+    `/api/usage/summary${qs({ path: q.path, model: q.model, provider: q.provider })}`,
+  )
+  return handle<UsageSummary>(res)
 }

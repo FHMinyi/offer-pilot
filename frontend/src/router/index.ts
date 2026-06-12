@@ -41,6 +41,12 @@ const routes: RouteRecordRaw[] = [
     name: 'dashboard',
     component: () => import('../views/DashboardView.vue'),
   },
+  {
+    // 用量统计：token 用量时序 + 缓存命中率 + 按模型/功能汇总
+    path: '/usage',
+    name: 'usage',
+    component: () => import('../views/UsageView.vue'),
+  },
 ]
 
 const router = createRouter({

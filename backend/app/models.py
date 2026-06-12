@@ -14,6 +14,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -295,4 +296,55 @@ class MasteryCheck(Base):
     # 缺口：与 InterviewLog.blind_spots 同构 list[{skill_key, skill_name, severity, evidence, matched}]
     gaps: Mapped[list] = mapped_column(JSON, default=list)
     engine: Mapped[str] = mapped_column(String(32), default="rule")  # llm:openai/llm:anthropic/rule/manual
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Token 用量统计子系统：把每一次真实 LLM 调用的三类 token 落库，供 /api/usage
+# 时间序列与汇总聚合。全链路统一命名 input_hit / input_miss / output（DB 列=API=SSE=
+# 前端类型，绝不出现 cached/uncached）。total 写库时算好。db_guard 故意不把本表纳入
+# MILESTONE1_TABLES（那是里程碑一基线，本表属后续子系统，create_all 会自动补齐）。
+# ---------------------------------------------------------------------------
+
+# 6 条真实 LLM 业务路径的中文展示名（gap_analysis/roadmap 是纯规则、无 LLM，不打标签）。
+PATH_LABEL: dict[str, str] = {
+    "chat": "对话",
+    "resume": "简历解析",
+    "jd": "JD解析",
+    "optimize": "简历优化",
+    "blindspot": "盲区提取",
+    "mastery": "掌握判定",
+}
+
+
+class TokenUsage(Base):
+    """单次 LLM 调用的 token 用量明细。
+
+    统计强制按设备过滤（user_id），不走 ownership 放行。created_at 落 UTC，分桶在
+    应用层按 tz_offset 偏移后取本地小时/日（不依赖 SQLite strftime）。
+    """
+
+    __tablename__ = "token_usages"
+    __table_args__ = (
+        # 统计查询按 user_id + 时间范围扫描，故复合索引；另对 created_at 单列建索引
+        Index("ix_token_usages_user_created", "user_id", "created_at"),
+        Index("ix_token_usages_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="local")
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    analysis_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("analysis_runs.id"), nullable=True, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(16), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    # 6 条业务路径之一：chat/resume/jd/optimize/blindspot/mastery（未知=unknown）
+    path: Mapped[str] = mapped_column(String(32), default="", index=True)
+    streamed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 三类 token：命中缓存的输入 / 未命中的输入 / 输出；total 写库时算好
+    input_hit: Mapped[int] = mapped_column(Integer, default=0)
+    input_miss: Mapped[int] = mapped_column(Integer, default=0)
+    output: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

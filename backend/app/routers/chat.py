@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from ..database import SessionLocal
 from ..deps import get_current_user
 from ..schemas import ChatRequest
-from ..services import agent, llm
+from ..services import agent, llm, usage
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -48,6 +48,8 @@ def chat_stream(
         # reset 而报错，且覆盖无法可靠跨 yield 传播；显式 ctx 则全程可见、无需重置。
         ctx = contextvars.copy_context()
         ctx.run(llm.set_override, override)
+        # 同一专属 context 内设归属：本轮所有 LLM 调用的用量都打 path=chat + user_id
+        ctx.run(usage.set_usage_context, {"path": "chat", "user_id": user_id})
         try:
             inner = agent.run_turn(
                 messages, context, db, reasoning_effort, client_time, user_id=user_id

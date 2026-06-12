@@ -61,6 +61,25 @@ def set_override(override: dict | None) -> None:
     _override.set(override or None)
 
 
+def _safe_record(provider: str, model: str, raw_usage, streamed: bool = False) -> None:
+    """归一并落库一次 token 用量。统计永不连累业务：整体 try/except 吞异常。
+
+    raw_usage 为 SDK 的 usage 对象（或 None）；归一后 total==0（含 None）则不记账。
+    归属上下文由 services.usage 的 contextvars 提供（path/user_id/… 由各路由/pipeline 设置）。
+    """
+    try:
+        from .usage import current_ctx, normalize_usage, record_usage
+
+        nu = normalize_usage(provider, raw_usage)
+        if nu.total == 0:
+            return
+        record_usage(
+            provider=provider, model=model, streamed=streamed, usage=nu, ctx=current_ctx()
+        )
+    except Exception as exc:  # noqa: BLE001 统计失败绝不影响 LLM 调用
+        logger.debug("token 用量记录失败（已忽略）：%s", exc)
+
+
 def _eff_provider() -> str:
     """生效 provider（覆盖非空才生效，否则回退 settings）。"""
     ov = _override.get() or {}
@@ -249,6 +268,7 @@ def _call_openai(system: str, user: str, model: str, effort: str | None = None) 
             resp = client.chat.completions.create(**kwargs)
         else:
             raise
+    _safe_record(provider="openai", model=model, raw_usage=getattr(resp, "usage", None), streamed=False)
     return _extract_json(resp.choices[0].message.content or "")
 
 
@@ -331,6 +351,9 @@ def openai_stream(
         "messages": messages,
         "temperature": 0.3,
         "stream": True,
+        # 请求在流末尾附带本次 usage（含 prompt_tokens_details.cached_tokens）。
+        # 不认此参数的兼容服务会在下方 except 分支去掉重试。
+        "stream_options": {"include_usage": True},
     }
     if tools:
         kwargs["tools"] = tools
@@ -339,9 +362,10 @@ def openai_stream(
 
     try:
         stream = client.chat.completions.create(**kwargs)
-    except Exception:  # noqa: BLE001 部分兼容服务不认识 reasoning_effort，去掉后重试
-        if "reasoning_effort" in kwargs:
-            kwargs.pop("reasoning_effort")
+    except Exception:  # noqa: BLE001 部分兼容服务不认识 reasoning_effort / stream_options，去掉后重试
+        if "reasoning_effort" in kwargs or "stream_options" in kwargs:
+            kwargs.pop("reasoning_effort", None)
+            kwargs.pop("stream_options", None)
             stream = client.chat.completions.create(**kwargs)
         else:
             raise
@@ -349,8 +373,12 @@ def openai_stream(
     content = ""
     tool_slots: dict[int, dict] = {}
     finish = None
+    captured_usage = None
 
     for chunk in stream:
+        # usage 一般在最后一个（choices 为空的）块上下发，故先于「无 choices 则跳过」捕获
+        if getattr(chunk, "usage", None):
+            captured_usage = chunk.usage
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -378,6 +406,7 @@ def openai_stream(
             finish = choice.finish_reason
 
     tool_calls = [tool_slots[i] for i in sorted(tool_slots)]
+    _safe_record(provider="openai", model=_eff_model(), raw_usage=captured_usage, streamed=True)
     yield {"type": "final", "content": content, "tool_calls": tool_calls, "finish": finish}
 
 
@@ -472,6 +501,7 @@ def anthropic_stream(messages: list[dict], tools: list[dict] | None = None, budg
         kwargs["max_tokens"] = max(4096, budget + 1024)
 
     resp = client.messages.create(**kwargs)
+    _safe_record(provider="anthropic", model=kwargs["model"], raw_usage=getattr(resp, "usage", None), streamed=True)
 
     content = ""
     tool_calls: list[dict] = []
@@ -520,5 +550,6 @@ def _call_anthropic(system: str, user: str, model: str, effort: str | None = Non
             resp = client.messages.create(**kwargs)
         else:
             raise
+    _safe_record(provider="anthropic", model=model, raw_usage=getattr(resp, "usage", None), streamed=False)
     parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
     return _extract_json("".join(parts))

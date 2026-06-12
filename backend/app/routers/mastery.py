@@ -41,6 +41,7 @@ from ..schemas import (
 )
 from ..services.interview import reweight_from_blind_spots
 from ..services.mastery import generate_quiz, judge_feynman, judge_quiz
+from ..services.usage import usage_context
 
 logger = logging.getLogger("offerpilot.mastery")
 
@@ -157,7 +158,8 @@ def judge_feynman_endpoint(
     """费曼模式：提交复述 → AI 判定 →（passed 则标 mastered）→ 缺口回灌。"""
     task = require_owned(db, Task, payload.task_id, user_id)
     _require_learn(task)
-    result = judge_feynman(payload.content, task, payload.reasoning_effort)
+    with usage_context(path="mastery", user_id=user_id, analysis_run_id=task.analysis_run_id):
+        result = judge_feynman(payload.content, task, payload.reasoning_effort)
     return _finalize(
         db, user_id, task,
         mode="feynman", user_input=payload.content, questions=[],
@@ -174,7 +176,8 @@ def generate_quiz_endpoint(
     """出题模式第一步：为某 learn 任务生成 2-3 道题（无状态，questions 由前端持有回传）。"""
     task = require_owned(db, Task, payload.task_id, user_id)
     _require_learn(task)
-    res = generate_quiz(task, payload.reasoning_effort)
+    with usage_context(path="mastery", user_id=user_id, analysis_run_id=task.analysis_run_id):
+        res = generate_quiz(task, payload.reasoning_effort)
     return QuizGenerateOut(
         task_id=task.id,
         questions=[QuizQuestion(**q) for q in res["questions"]],
@@ -192,7 +195,8 @@ def judge_quiz_endpoint(
     task = require_owned(db, Task, payload.task_id, user_id)
     _require_learn(task)
     questions = [q.model_dump() for q in payload.questions]
-    result = judge_quiz(questions, payload.answers, task, payload.reasoning_effort)
+    with usage_context(path="mastery", user_id=user_id, analysis_run_id=task.analysis_run_id):
+        result = judge_quiz(questions, payload.answers, task, payload.reasoning_effort)
     return _finalize(
         db, user_id, task,
         mode="quiz", user_input=_format_qa(questions, payload.answers), questions=questions,
