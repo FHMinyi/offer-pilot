@@ -11,7 +11,7 @@
 import { ref, type Ref } from 'vue'
 import { streamChat } from '../api/client'
 import type { ChatContext, ChatMessage, ReasoningEffort, TurnUsage } from '../types'
-import { clearAnalysisToolStatus, findPendingTool, findToolById } from './chatModel'
+import { clearAnalysisToolStatus, findPendingTool, findToolById, localStamp } from './chatModel'
 import type { AssistantBlock, AssistantTurn } from './chatModel'
 // 自定义大语言模型（BYO LLM）：六字段全空时 effectiveOverride() 为 undefined，回退后端 .env
 import { effectiveOverride } from './llmConfig'
@@ -166,9 +166,11 @@ export function useChatStream(deps: ChatStreamDeps) {
         onError: (e) => {
           assistant.error = e.message || '对话出错，请重试。'
         },
-        // 本轮结束
+        // 本轮结束（仅正常完成走到；abort 静默 return、出错走 onError 不走这里）
         onDone: () => {
           statusLine.value = ''
+          // 助手时间戳 = 全部回复完成那一刻（不含流式中途/工具调用）
+          assistant.time = localStamp()
         },
       },
       abortController.signal,

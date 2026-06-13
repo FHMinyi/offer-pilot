@@ -124,7 +124,7 @@ def test_guard_blocks_generate_plan_in_same_turn(client, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_agent_stream(messages, tools=None, effort="medium"):
+    def fake_agent_stream(messages, tools=None, effort="medium", tail_note=""):
         calls["n"] += 1
         if calls["n"] == 1:
             # 第一步：调用 analyze_match

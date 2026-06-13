@@ -147,7 +147,7 @@ def test_llm_generate_plan_materializes_with_user_id(monkeypatch):
     monkeypatch.setattr(llm, "streaming_supported", lambda: True)
     state = {"phase": 0, "run_id": None}
 
-    def fake_stream(messages, tools=None, effort="medium"):
+    def fake_stream(messages, tools=None, effort="medium", tail_note=""):
         state["phase"] += 1
         p = state["phase"]
         if p == 1:  # 第一轮：匹配分析

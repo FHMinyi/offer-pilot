@@ -119,6 +119,7 @@ export interface ResumeOut {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  time?: string // 该消息发生时刻（本地字符串）；后端拼成【时间】前缀注入正文
 }
 
 /**
@@ -194,13 +195,14 @@ export type PersistedBlock =
  * user 仅文本；assistant 为有序 blocks + 可选「无思考」标记与错误信息。
  */
 export type PersistedTurn =
-  | { role: 'user'; text: string }
+  | { role: 'user'; text: string; time?: string } // time=发送时刻
   | {
       role: 'assistant'
       blocks: PersistedBlock[]
       noThinking?: boolean
       error?: string
       usage?: TurnUsage // 本轮 token 用量（气泡小字 + 续聊重算会话累计）
+      time?: string // 回复完成时刻
     }
 
 /**

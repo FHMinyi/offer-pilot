@@ -91,26 +91,45 @@ def test_messages_to_anthropic_merges_consecutive_same_role():
     assert {b["tool_use_id"] for b in conv[2]["content"]} == {"a", "b"}
 
 
-def test_system_prompt_injects_time():
+def test_system_prompt_time_convention_is_stable():
+    # 时间改为每条消息自带，系统提示只留稳定约定说明、无具体时间值（缓存评审：每条消息自带时间）
     ctx = {"resume_text": "", "jd_texts": [], "target_role": "前端实习", "weeks": 4}
-    prompt = agent._system_prompt(ctx, client_time="2026-06-02 10:30:00 CST")
-    # 降粒度到小时（缓存评审 R1）：分秒归零，同一小时内提示词字节稳定
-    assert "2026-06-02 10:00 CST" in prompt
-    assert "10:30" not in prompt
-    assert "当前时间" in prompt
-    # 无传入时回退服务器时间（不为空）
-    prompt2 = agent._system_prompt(ctx, client_time="")
-    assert "当前时间" in prompt2
+    prompt = agent._system_prompt(ctx)
+    assert "【时间】" in prompt
+    assert "以最新一条用户消息的时间为" in prompt
+    # 不再注入任何具体时间值
+    assert "当前时间：" not in prompt
 
 
-def test_system_prompt_cache_friendly_layout():
-    """缓存评审 R1+R2：同小时不同分秒 → 提示词字节级一致；段序从稳到变。"""
-    ctx = {"resume_text": "张三的简历", "jd_texts": ["某 JD 全文"], "target_role": "前端", "weeks": 4, "tone": 50}
-    p1 = agent._system_prompt(ctx, client_time="2026/6/12 14:03:11")
-    p2 = agent._system_prompt(ctx, client_time="2026/6/12 14:58:59")
+def test_system_prompt_fully_stable():
+    """缓存评审：时间与语气都已移出系统提示 → 不同 tone / 不同时刻调用都字节级一致。"""
+    base = {"resume_text": "张三的简历", "jd_texts": ["某 JD 全文"], "target_role": "前端", "weeks": 4}
+    p1 = agent._system_prompt({**base, "tone": 0})
+    p2 = agent._system_prompt({**base, "tone": 100})
     assert p1 == p2
-    # 易变项（语气、时间）必须位于材料段之后，前缀缓存才能保住材料大头
-    assert p1.index("【已附简历】") < p1.index("语气强度") < p1.index("当前时间")
+    # 系统提示不含具体时间值、不含语气
+    assert "当前时间：" not in p1 and "语气强度" not in p1
+    # 材料置于末尾（仅中途新增素材才变），前缀其余部分恒定
+    assert p1.rstrip().endswith("某 JD 全文")
+
+
+def test_with_timestamp_prefix():
+    # 有 time → 加【时间】前缀；空/空白 → 原样
+    assert agent._with_timestamp("你好", "2026/06/13 14:03") == "【2026/06/13 14:03】你好"
+    assert agent._with_timestamp("你好", "") == "你好"
+    assert agent._with_timestamp("你好", "   ") == "你好"
+
+
+def test_tone_tail_note_stays_outside_cache_prefix():
+    # 模拟 anthropic_stream 的顺序：先打断点（落在真实用户块），再追加语气尾注块（无断点）
+    conv = [{"role": "user", "content": [{"type": "text", "text": "【t】hi"}]}]
+    kwargs = {"system": "S", "messages": conv}
+    llm._add_cache_breakpoints(kwargs)
+    real_block = conv[-1]["content"][-1]
+    assert real_block["cache_control"] == {"type": "ephemeral"}  # 断点在真实用户块
+    conv[-1]["content"].append({"type": "text", "text": "语气尾注"})  # 尾注后追加
+    assert "cache_control" not in conv[-1]["content"][-1]  # 尾注不带断点 → 在缓存前缀之外
+    assert conv[-1]["content"][-2] is real_block  # 真实块仍是被缓存的最后一块
 
 
 def test_anthropic_cache_breakpoints_add_and_strip():

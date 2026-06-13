@@ -298,19 +298,27 @@ _ANTHROPIC_BUDGET = {
 }
 
 
-def agent_stream(messages: list[dict], tools: list[dict] | None = None, effort: str = "medium"):
+def agent_stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    effort: str = "medium",
+    tail_note: str = "",
+):
     """对话 Agent 的统一流式入口，按 provider 分派，产出统一事件。
 
     事件：{"type":"reasoning"|"delta", ...} 与一次 {"type":"final", content, tool_calls, finish}。
     传入/返回的 messages、tools 均为 openai 格式，anthropic 的格式转换在内部完成，
     从而让上层 Agent 循环保持 provider 无关。
+
+    tail_note：每轮易变的「尾注」（如语气），置于消息序列最末、落在缓存前缀之外，
+    改它只作废尾注、不动 system+历史前缀（缓存评审：语气置尾）。
     """
     provider = _eff_provider()
     if provider == "anthropic":
         # 未知/非法档位默认 0（不开启思考），与 openai 路径对未知值不思考保持一致
-        yield from anthropic_stream(messages, tools, _ANTHROPIC_BUDGET.get(effort, 0))
+        yield from anthropic_stream(messages, tools, _ANTHROPIC_BUDGET.get(effort, 0), tail_note=tail_note)
     else:
-        yield from openai_stream(messages, tools, _OPENAI_EFFORT.get(effort))
+        yield from openai_stream(messages, tools, _OPENAI_EFFORT.get(effort), tail_note=tail_note)
 
 
 def _reasoning_delta(delta) -> str | None:
@@ -326,6 +334,7 @@ def openai_stream(
     messages: list[dict],
     tools: list[dict] | None = None,
     reasoning_effort: str | None = None,
+    tail_note: str = "",
 ):
     """以 openai 协议进行一次流式对话，按增量产出事件。
 
@@ -346,9 +355,12 @@ def openai_stream(
         api_key=_eff_api_key() or "not-needed",
         base_url=_eff_base_url() or None,
     )
+    # 语气尾注作为尾随 system 消息置于序列最末——不影响 [system…历史] 前缀缓存，
+    # 改语气只让这条尾随消息变化（缓存评审：语气置尾）。
+    msgs = [*messages, {"role": "system", "content": tail_note}] if tail_note else messages
     kwargs: dict = {
         "model": _eff_model(),
-        "messages": messages,
+        "messages": msgs,
         "temperature": 0.3,
         "stream": True,
         # 请求在流末尾附带本次 usage（含 prompt_tokens_details.cached_tokens）。
@@ -500,7 +512,12 @@ def _strip_cache_breakpoints(kwargs: dict) -> bool:
     return changed
 
 
-def anthropic_stream(messages: list[dict], tools: list[dict] | None = None, budget: int = 0):
+def anthropic_stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    budget: int = 0,
+    tail_note: str = "",
+):
     """anthropic 协议的 Agent 单步（非逐 token 流式，但产出同样的事件结构）。
 
     支持扩展思考（thinking budget）与工具调用。为规避“思考块 + 工具续写”的签名约束，
@@ -529,6 +546,10 @@ def anthropic_stream(messages: list[dict], tools: list[dict] | None = None, budg
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
         kwargs["max_tokens"] = max(4096, budget + 1024)
     _add_cache_breakpoints(kwargs)
+    # 语气尾注：在打完缓存断点【之后】追加，使其落在最后一个断点之外——
+    # 改语气只作废这一尾注 block，system+历史前缀仍命中（缓存评审：语气置尾）。
+    if tail_note and conv and isinstance(conv[-1].get("content"), list):
+        conv[-1]["content"].append({"type": "text", "text": tail_note})
 
     try:
         resp = client.messages.create(**kwargs)

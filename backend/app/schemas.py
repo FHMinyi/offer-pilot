@@ -123,6 +123,9 @@ class AnalysisRunOut(BaseModel):
 class ChatMessageIn(BaseModel):
     role: str = Field(..., description="user 或 assistant")
     content: str = ""
+    # 该消息的发生时刻（本地字符串，前端采集；用户=发送时、助手=回复完成时）。
+    # 一旦发出即不可变，后端拼成【时间】前缀注入正文（缓存评审：每条消息自带时间）。
+    time: str = ""
 
 
 class ChatContextIn(BaseModel):

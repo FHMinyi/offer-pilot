@@ -129,9 +129,12 @@ function formatDate(iso: string): string {
     <!-- 正常：只读回放完整对话 -->
     <div v-else class="thread">
       <template v-for="(turn, ti) in turns" :key="ti">
-        <!-- 用户气泡（右）：纯文本 -->
+        <!-- 用户气泡（右）：纯文本 + 发送时刻 -->
         <div v-if="turn.role === 'user'" class="msg msg--user">
-          <div class="bubble bubble--user">{{ turn.text }}</div>
+          <div class="msg__user-wrap">
+            <div class="bubble bubble--user">{{ turn.text }}</div>
+            <time v-if="turn.time" class="msg-time">{{ turn.time }}</time>
+          </div>
         </div>
 
         <!-- 助手消息（左）：气泡内部（blocks / 错误条 / 无思考提示 / usage 小字）
@@ -157,6 +160,7 @@ function formatDate(iso: string): string {
                 </div>
               </template>
             </AssistantBlocks>
+            <time v-if="turn.time" class="msg-time">{{ turn.time }}</time>
           </div>
         </div>
       </template>
@@ -221,6 +225,23 @@ function formatDate(iso: string): string {
 
 .msg--user {
   justify-content: flex-end;
+}
+
+/* 用户消息：气泡 + 发送时刻小字，右对齐纵向堆叠 */
+.msg__user-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 时间戳小字（用户=发送、助手=回复完成） */
+.msg-time {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.75;
+  user-select: none;
 }
 
 .msg--assistant {

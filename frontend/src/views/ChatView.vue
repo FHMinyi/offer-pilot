@@ -39,6 +39,7 @@ import ReportSidePanel from '../components/chat/ReportSidePanel.vue'
 import {
   collapseAllReasoning,
   findLastReportBlock,
+  localStamp,
   snapshotChatContext,
   toPayloadMessages,
 } from '../shared/chatModel'
@@ -228,7 +229,8 @@ async function send(): Promise<void> {
   const userText = raw || '请基于我已提供的简历和 JD 开始分析。'
 
   // 1) 追加用户消息（输入清空后的高度复位由 ChatComposer 内 watch 自动完成）
-  turns.push({ role: 'user', text: userText })
+  //    盖发送时刻（不可变，注入模型 + 气泡显示）
+  turns.push({ role: 'user', text: userText, time: localStamp() })
   input.value = ''
   // 用户主动发送：强制贴底并复位 atBottom，确保看到自己刚发出的消息与后续回复
   void scrollToBottom(true)
@@ -445,6 +447,7 @@ onUnmounted(() => {
           <div v-if="turn.role === 'user'" class="msg msg--user">
             <div class="msg__user-wrap">
               <div class="bubble bubble--user">{{ turn.text }}</div>
+              <time v-if="turn.time" class="msg-time msg-time--user">{{ turn.time }}</time>
               <button
                 type="button"
                 class="msg-edit"
@@ -489,6 +492,7 @@ onUnmounted(() => {
                   </button>
                 </template>
               </AssistantBlocks>
+              <time v-if="turn.time" class="msg-time msg-time--assistant">{{ turn.time }}</time>
             </div>
           </div>
         </template>
@@ -680,6 +684,18 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: 4px;
   min-width: 0;
+}
+
+/* 每条消息的时间戳小字（用户=发送时刻、助手=回复完成时刻） */
+.msg-time {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.75;
+  user-select: none;
+}
+.msg-time--assistant {
+  display: block;
+  margin-top: 4px;
 }
 
 .msg-edit {

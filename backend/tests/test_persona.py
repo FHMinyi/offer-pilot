@@ -23,11 +23,14 @@ def test_tone_directive_clamps_out_of_range():
     assert "100/100" in _tone_directive(999)
 
 
-def test_system_prompt_injects_tone():
-    assert "语气强度 0/100" in _system_prompt({"tone": 0})
-    assert "语气强度 100/100" in _system_prompt({"tone": 100})
-    # 默认 50（不传 tone）
-    assert "语气强度 50/100" in _system_prompt({})
+def test_tone_moved_out_of_system_prompt():
+    # 语气改为消息尾注，不再进系统提示（缓存评审：语气置尾）——拨滑块不冲历史缓存
+    assert "语气强度" not in _system_prompt({"tone": 0})
+    assert "语气强度" not in _system_prompt({"tone": 100})
+    # 语气文案仍由纯函数产出（尾注内容由 run_turn 用它拼装）
+    assert "语气强度 0/100" in _tone_directive(0)
+    assert "语气强度 100/100" in _tone_directive(100)
+    assert "语气强度 50/100" in _tone_directive(50)
 
 
 def test_persona_registry_default_and_fallback():

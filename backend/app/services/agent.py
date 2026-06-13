@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -160,33 +159,24 @@ def _tone_directive(tone: int) -> str:
     )
 
 
-# 匹配 "HH:MM" / "HH:MM:SS"，用于把时间降粒度到小时
-_TIME_HMS = re.compile(r"\b(\d{1,2}):\d{2}(?::\d{2})?\b")
+def _with_timestamp(content: str, time: str) -> str:
+    """给消息正文加【时间】前缀（time 空则原样返回）。
 
-
-def _now_str(client_time: str) -> str:
-    """优先用前端传入的本地时间，否则回退服务器时间；统一降粒度到小时。
-
-    时间戳在系统提示内，秒级精度会让提示词每轮都变、前缀缓存必断；
-    小时粒度下同一小时内提示词字节稳定（见 docs/上下文系统设计与缓存评审 R1）。
+    每条消息的时间戳发出即不可变，是 append-only 前缀的一部分、零缓存代价；
+    模型据此做跨轮时间推理（见 docs/上下文系统设计与缓存评审：每条消息自带时间）。
     """
-    if client_time and client_time.strip():
-        return _TIME_HMS.sub(lambda m: f"{m.group(1)}:00", client_time.strip())
-    from datetime import datetime
-
-    return datetime.now().astimezone().strftime("%Y-%m-%d %H:00 %Z")
+    t = (time or "").strip()
+    return f"【{t}】{content}" if t else content
 
 
-def _system_prompt(context: dict, client_time: str = "") -> str:
+def _system_prompt(context: dict) -> str:
     resume_text = (context.get("resume_text") or "").strip()
     jd_texts = [t for t in (context.get("jd_texts") or []) if t and t.strip()]
     role = context.get("target_role") or "（未指定，可询问用户）"
     weeks = context.get("weeks") or 4
-    now = _now_str(client_time)
-    # E3 人设引擎：单人设 + 语气滑块（理智脑/流程不变，仅调情感脑措辞）
+    # E3 人设引擎：单人设（语气改为「尾注」每轮置于消息尾部，不再进系统提示）
     persona = context.get("persona") or "default"
     persona_desc = PERSONAS.get(persona, PERSONAS["default"])
-    tone_directive = _tone_directive(context.get("tone", 50))
 
     # 把已附材料的实际内容给模型，避免它以为“看不到内容”而反复索取（截断防止过长）
     material: list[str] = []
@@ -223,14 +213,12 @@ def _system_prompt(context: dict, client_time: str = "") -> str:
         "learning_style / weeks 等用户已给的偏好）生成个性化学习路线，随后简要说明计划思路与本周重点。"
         "不要为生成计划而重复调用 analyze_match。\n\n"
         "风格：中文、简洁、具体、不说空话。\n\n"
-        # 段序按「从稳到变」排列以最大化前缀缓存命中（缓存评审 R2）：
-        # 静态指令 → 岗位/周数与材料（会话内基本稳定）→ 语气（用户偶尔调）→ 时间（每小时变）。
-        # 前缀缓存在第一处字节差异折断，易变项置尾可保住前面的大头。
-        f"目标岗位：{role}；学习路线周数：{weeks}。\n\n"
-        + "\n\n".join(material)
-        + f"\n\n{tone_directive}\n\n"
-        f"当前时间：{now}。涉及“当前/最新/今年”等信息时以此为准；"
-        "联网检索时请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时的年份。"
+        # 时间与语气都已移出系统提示（缓存评审：每条消息自带时间 + 语气置尾），
+        # 系统提示因此完全无每轮易变项；材料置于末尾（仅中途新增素材时才变）。
+        "对话中每条消息开头的【时间】是该消息的发生时刻（用户消息=发送时间、助手消息=回复完成时间）；"
+        "以最新一条用户消息的时间为“现在”，涉及“当前/最新/今年”等以它为准；"
+        "联网检索请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时年份。\n\n"
+        f"目标岗位：{role}；学习路线周数：{weeks}。\n\n" + "\n\n".join(material)
     )
 
 
@@ -250,12 +238,22 @@ def run_turn(
         yield from _scripted_turn(context, db, user_id)
         return
 
-    llm_messages: list[dict] = [{"role": "system", "content": _system_prompt(context, client_time)}]
-    for m in messages:
-        role = m.get("role")
-        content = m.get("content", "")
-        if role in ("user", "assistant") and content:
-            llm_messages.append({"role": role, "content": content})
+    llm_messages: list[dict] = [{"role": "system", "content": _system_prompt(context)}]
+    # 过滤出有效历史，并给每条正文加【时间】前缀（缓存评审：每条消息自带时间）。
+    history = [m for m in messages if m.get("role") in ("user", "assistant") and m.get("content")]
+    # 兜底：最后一条用户消息若无 time（老客户端/老会话），用本轮 client_time 补盖，保住「现在」锚点。
+    last_user = max((i for i, m in enumerate(history) if m.get("role") == "user"), default=-1)
+    for i, m in enumerate(history):
+        t = (m.get("time") or "").strip()
+        if not t and i == last_user:
+            t = client_time.strip()
+        llm_messages.append({"role": m["role"], "content": _with_timestamp(m.get("content", ""), t)})
+
+    # 语气作为「尾注」每轮现生成、置于消息尾部（不进历史/不持久化），
+    # 使系统提示保持稳定、改语气不冲历史缓存（缓存评审：语气置尾）。
+    tail_note = "（以下为本轮回复的语气要求，仅约束措辞，不改变分析流程与结论）" + _tone_directive(
+        context.get("tone", 50)
+    )
 
     # 本轮状态：是否已做过匹配分析、是否已向用户输出过文字
     did_analyze = False
@@ -266,7 +264,7 @@ def run_turn(
         try:
             for _ in range(_MAX_STEPS):
                 final: dict | None = None
-                for ev in llm.agent_stream(llm_messages, TOOLS, reasoning_effort):
+                for ev in llm.agent_stream(llm_messages, TOOLS, reasoning_effort, tail_note=tail_note):
                     if ev["type"] == "reasoning":
                         # “关闭”时即使模型仍产出思考内容（如总是思考的 reasoner），也不展示
                         if reasoning_effort != "off":

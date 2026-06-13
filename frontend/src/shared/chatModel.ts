@@ -44,10 +44,12 @@ export type AssistantBlock =
   | { kind: 'report'; analysis_run_id: number; result: AnalysisResult }
 
 // ---------- 渲染用消息结构 ----------
-// 用户消息：仅文本。
+// 用户消息：仅文本 + 发送时刻。
 export interface UserTurn {
   role: 'user'
   text: string
+  // 发送时刻（本地分钟精度字符串）；一旦发出即不可变，注入模型 + 气泡显示。
+  time?: string
 }
 // 助手消息：有序 blocks + 可选错误 + 流式标记 + 折叠态。
 export interface AssistantTurn {
@@ -66,8 +68,23 @@ export interface AssistantTurn {
   noThinking?: boolean
   // 本轮 token 用量（SSE usage 事件到达后置位）：气泡小字展示输入(命中)/输出。
   usage?: TurnUsage
+  // 回复完成时刻（本地分钟精度字符串，SSE done 时置位）；流式中无、不计工具调用。
+  time?: string
 }
 export type ChatTurn = UserTurn | AssistantTurn
+
+// 当前本地时刻（分钟精度，zh-CN）。供发送 / 回复完成两处采集复用；
+// 因时间戳不可变，分钟精度足够可读、且零缓存代价。
+export function localStamp(): string {
+  return new Date().toLocaleString('zh-CN', {
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
 
 // ===================================================================
 //  token 用量
@@ -104,11 +121,14 @@ function assistantPlainText(t: AssistantTurn): string {
 // 把渲染用消息投影为发给后端的 { role, content }。
 // user 取其文本；assistant 取所有 text 块拼接。
 export function toPayloadMessages(list: ChatTurn[]): ChatMessage[] {
-  return list.map((t) =>
-    t.role === 'user'
-      ? { role: 'user', content: t.text }
-      : { role: 'assistant', content: assistantPlainText(t) },
-  )
+  return list.map((t) => {
+    const msg: ChatMessage =
+      t.role === 'user'
+        ? { role: 'user', content: t.text }
+        : { role: 'assistant', content: assistantPlainText(t) }
+    if (t.time) msg.time = t.time // 每条消息携带其发生时刻（后端拼成【时间】前缀）
+    return msg
+  })
 }
 
 // 当前 context 的纯净快照（去掉空字段，避免回传无意义数据）。
@@ -147,7 +167,9 @@ export function snapshotChatContext(
 export function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
   return list.map((t): PersistedTurn => {
     if (t.role === 'user') {
-      return { role: 'user', text: t.text }
+      const u: PersistedTurn = { role: 'user', text: t.text }
+      if (t.time) u.time = t.time
+      return u
     }
     const blocks: PersistedBlock[] = t.blocks.map((b) => {
       switch (b.kind) {
@@ -179,6 +201,7 @@ export function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
     if (t.noThinking) turn.noThinking = true
     if (t.error) turn.error = t.error
     if (t.usage) turn.usage = t.usage // 本轮 token 用量随会话存盘
+    if (t.time) turn.time = t.time // 回复完成时刻随会话存盘
     return turn
   })
 }
@@ -190,7 +213,7 @@ export function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
 export function deserializeTurns(list: PersistedTurn[]): ChatTurn[] {
   return list.map((t): ChatTurn => {
     if (t.role === 'user') {
-      return { role: 'user', text: t.text }
+      return { role: 'user', text: t.text, time: t.time }
     }
     const blocks: AssistantBlock[] = []
     for (const b of t.blocks) {
@@ -237,6 +260,7 @@ export function deserializeTurns(list: PersistedTurn[]): ChatTurn[] {
       reasoningOpen: {},
       noThinking: t.noThinking,
       usage: t.usage, // 还原本轮 token 用量（气泡小字 + 会话累计重算）
+      time: t.time, // 还原回复完成时刻
     }
   })
 }
