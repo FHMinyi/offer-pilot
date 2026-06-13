@@ -102,15 +102,20 @@ def test_system_prompt_time_convention_is_stable():
 
 
 def test_system_prompt_fully_stable():
-    """缓存评审：时间与语气都已移出系统提示 → 不同 tone / 不同时刻调用都字节级一致。"""
-    base = {"resume_text": "张三的简历", "jd_texts": ["某 JD 全文"], "target_role": "前端", "weeks": 4}
-    p1 = agent._system_prompt({**base, "tone": 0})
-    p2 = agent._system_prompt({**base, "tone": 100})
-    assert p1 == p2
-    # 系统提示不含具体时间值、不含语气
+    """缓存评审：时间/语气/素材都已移出系统提示 → 不同 tone、不同素材都字节级一致。"""
+    p1 = agent._system_prompt(
+        {"resume_text": "张三的简历", "jd_texts": ["某 JD 全文"], "target_role": "前端", "weeks": 4, "tone": 0}
+    )
+    # 换一份完全不同的素材 + 不同 tone
+    p2 = agent._system_prompt(
+        {"resume_text": "李四的另一份简历", "jd_texts": ["别的 JD", "再一条"], "target_role": "前端", "weeks": 4, "tone": 100}
+    )
+    assert p1 == p2  # 素材不进系统提示 → 字节一致
+    # 系统提示不含具体时间值、不含语气、不含素材正文
     assert "当前时间：" not in p1 and "语气强度" not in p1
-    # 材料置于末尾（仅中途新增素材才变），前缀其余部分恒定
-    assert p1.rstrip().endswith("某 JD 全文")
+    assert "张三的简历" not in p1 and "某 JD 全文" not in p1
+    # 改为稳定规则：解释素材以【已附…】消息出现在历史
+    assert "【已附简历】" in p1 and "对话历史" in p1
 
 
 def test_with_timestamp_prefix():
@@ -118,6 +123,20 @@ def test_with_timestamp_prefix():
     assert agent._with_timestamp("你好", "2026/06/13 14:03") == "【2026/06/13 14:03】你好"
     assert agent._with_timestamp("你好", "") == "你好"
     assert agent._with_timestamp("你好", "   ") == "你好"
+
+
+def test_user_content_with_materials():
+    # 带冻结素材 → 拼【已附简历】/【已附 N 条 JD】+ 分隔线 + 原文
+    out = agent._user_content_with_materials(
+        {"role": "user", "content": "帮我分析", "attached_resume": "我的简历正文", "attached_jds": ["JD1", "JD2"]}
+    )
+    assert "【已附简历】" in out and "我的简历正文" in out
+    assert "【已附 2 条 JD】" in out and "JD1" in out and "JD2" in out
+    assert out.rstrip().endswith("帮我分析")  # 用户原文在素材块之后
+    # 不带素材 → 原样
+    assert agent._user_content_with_materials({"role": "user", "content": "你好"}) == "你好"
+    # 空白素材视作无
+    assert agent._user_content_with_materials({"role": "user", "content": "hi", "attached_resume": "  "}) == "hi"
 
 
 def test_tone_tail_note_stays_outside_cache_prefix():

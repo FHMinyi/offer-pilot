@@ -120,6 +120,10 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   time?: string // 该消息发生时刻（本地字符串）；后端拼成【时间】前缀注入正文
+  // 引入/变更素材的那一轮，把当时的简历/JD 冻结到该用户消息（缓存评审：素材作为冻结消息进历史）。
+  // 线格式用 snake_case 对齐后端 Pydantic ChatMessageIn。
+  attached_resume?: string
+  attached_jds?: string[]
 }
 
 /**
@@ -195,7 +199,8 @@ export type PersistedBlock =
  * user 仅文本；assistant 为有序 blocks + 可选「无思考」标记与错误信息。
  */
 export type PersistedTurn =
-  | { role: 'user'; text: string; time?: string } // time=发送时刻
+  // time=发送时刻；attachedResume/Jds=引入/变更素材那一轮冻结的快照（缓存评审：素材进历史）
+  | { role: 'user'; text: string; time?: string; attachedResume?: string; attachedJds?: string[] }
   | {
       role: 'assistant'
       blocks: PersistedBlock[]

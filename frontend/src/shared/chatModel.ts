@@ -44,12 +44,16 @@ export type AssistantBlock =
   | { kind: 'report'; analysis_run_id: number; result: AnalysisResult }
 
 // ---------- 渲染用消息结构 ----------
-// 用户消息：仅文本 + 发送时刻。
+// 用户消息：文本 + 发送时刻 + （引入/变更素材时）冻结的素材快照。
 export interface UserTurn {
   role: 'user'
   text: string
   // 发送时刻（本地分钟精度字符串）；一旦发出即不可变，注入模型 + 气泡显示。
   time?: string
+  // 引入/变更素材的那一轮冻结的简历/JD 快照（缓存评审：素材作为冻结消息进历史）；
+  // 一旦发出不再变，后端拼进该条正文、气泡显示紧凑标记。
+  attachedResume?: string
+  attachedJds?: string[]
 }
 // 助手消息：有序 blocks + 可选错误 + 流式标记 + 折叠态。
 export interface AssistantTurn {
@@ -127,8 +131,52 @@ export function toPayloadMessages(list: ChatTurn[]): ChatMessage[] {
         ? { role: 'user', content: t.text }
         : { role: 'assistant', content: assistantPlainText(t) }
     if (t.time) msg.time = t.time // 每条消息携带其发生时刻（后端拼成【时间】前缀）
+    if (t.role === 'user') {
+      // 冻结素材快照随该轮携带（线格式 snake_case；后端拼进该条正文，缓存评审：素材进历史）
+      if (t.attachedResume) msg.attached_resume = t.attachedResume
+      if (t.attachedJds && t.attachedJds.length) msg.attached_jds = t.attachedJds
+    }
     return msg
   })
+}
+
+// 用户消息上冻结的素材快照 → 紧凑标记文案（如「📎 已附简历 · JD ×2」）；无则空串。
+// 两个视图（ChatView 流式 / ConversationView 回放）共用，不展示素材正文。
+export function attachLabel(resume?: string, jds?: string[]): string {
+  const parts: string[] = []
+  if (resume) parts.push('简历')
+  if (jds && jds.length) parts.push(`JD ×${jds.length}`)
+  return parts.length ? `📎 已附${parts.join(' · ')}` : ''
+}
+
+// 倒序找最近一条带冻结素材的用户 turn 的快照（无则空）。
+export function lastAttached(list: ChatTurn[]): { resume: string; jds: string[] } {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i]
+    if (t.role === 'user' && (t.attachedResume || (t.attachedJds && t.attachedJds.length))) {
+      return { resume: t.attachedResume ?? '', jds: t.attachedJds ? [...t.attachedJds] : [] }
+    }
+  }
+  return { resume: '', jds: [] }
+}
+
+// 当前素材与上次冻结相比有变化时，返回应冻结到本轮用户 turn 的快照；否则 null。
+// 「变了才冻结」的增量检测（缓存评审：素材作为冻结消息进历史，append-only 不冲缓存）。
+// 全部移除（当前空、上次非空）：返回 null（v1 不附「已清空」标记，边界已记账）。
+export function pendingAttachment(
+  list: ChatTurn[],
+  resume: string | undefined,
+  jds: string[] | undefined,
+): { attachedResume?: string; attachedJds?: string[] } | null {
+  const curResume = (resume ?? '').trim()
+  const curJds = (jds ?? []).map((j) => (j ?? '').trim()).filter(Boolean)
+  const last = lastAttached(list)
+  const sameJds = curJds.length === last.jds.length && curJds.every((j, i) => j === last.jds[i])
+  if (curResume === last.resume && sameJds) return null
+  const out: { attachedResume?: string; attachedJds?: string[] } = {}
+  if (curResume) out.attachedResume = curResume
+  if (curJds.length) out.attachedJds = curJds
+  return out.attachedResume || out.attachedJds ? out : null
 }
 
 // 当前 context 的纯净快照（去掉空字段，避免回传无意义数据）。
@@ -169,6 +217,8 @@ export function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
     if (t.role === 'user') {
       const u: PersistedTurn = { role: 'user', text: t.text }
       if (t.time) u.time = t.time
+      if (t.attachedResume) u.attachedResume = t.attachedResume
+      if (t.attachedJds && t.attachedJds.length) u.attachedJds = t.attachedJds
       return u
     }
     const blocks: PersistedBlock[] = t.blocks.map((b) => {
@@ -213,7 +263,13 @@ export function serializeTurns(list: ChatTurn[]): PersistedTurn[] {
 export function deserializeTurns(list: PersistedTurn[]): ChatTurn[] {
   return list.map((t): ChatTurn => {
     if (t.role === 'user') {
-      return { role: 'user', text: t.text, time: t.time }
+      return {
+        role: 'user',
+        text: t.text,
+        time: t.time,
+        attachedResume: t.attachedResume,
+        attachedJds: t.attachedJds,
+      }
     }
     const blocks: AssistantBlock[] = []
     for (const b of t.blocks) {

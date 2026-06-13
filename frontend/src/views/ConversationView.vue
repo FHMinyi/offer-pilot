@@ -16,7 +16,7 @@ import { onMounted, reactive, ref } from 'vue'
 import type { ConversationDetail } from '../types'
 import { getConversation } from '../api/client'
 import type { ChatTurn } from '../shared/chatModel'
-import { deserializeTurns } from '../shared/chatModel'
+import { attachLabel, deserializeTurns } from '../shared/chatModel'
 import AnalysisReport from '../components/AnalysisReport.vue'
 import AssistantBlocks from '../components/chat/AssistantBlocks.vue'
 import AppCard from '../components/ui/AppCard.vue'
@@ -133,6 +133,11 @@ function formatDate(iso: string): string {
         <div v-if="turn.role === 'user'" class="msg msg--user">
           <div class="msg__user-wrap">
             <div class="bubble bubble--user">{{ turn.text }}</div>
+            <span
+              v-if="turn.attachedResume || (turn.attachedJds && turn.attachedJds.length)"
+              class="msg-attach"
+              >{{ attachLabel(turn.attachedResume, turn.attachedJds) }}</span
+            >
             <time v-if="turn.time" class="msg-time">{{ turn.time }}</time>
           </div>
         </div>
@@ -241,6 +246,14 @@ function formatDate(iso: string): string {
   font-size: 0.72rem;
   color: var(--text-muted);
   opacity: 0.75;
+  user-select: none;
+}
+
+/* 素材附加紧凑标记（如「📎 已附简历 · JD ×2」）；不展示正文 */
+.msg-attach {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.85;
   user-select: none;
 }
 

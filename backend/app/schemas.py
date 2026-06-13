@@ -126,6 +126,10 @@ class ChatMessageIn(BaseModel):
     # 该消息的发生时刻（本地字符串，前端采集；用户=发送时、助手=回复完成时）。
     # 一旦发出即不可变，后端拼成【时间】前缀注入正文（缓存评审：每条消息自带时间）。
     time: str = ""
+    # 引入/变更素材的那一轮，前端把当时的简历/JD 冻结到该用户消息上（缓存评审：素材作为
+    # 冻结消息进历史）。后端拼进该条正文；analyze_match 仍读 context 最新版，二者各司其职。
+    attached_resume: str = ""
+    attached_jds: list[str] = Field(default_factory=list)
 
 
 class ChatContextIn(BaseModel):

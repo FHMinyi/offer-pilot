@@ -169,28 +169,31 @@ def _with_timestamp(content: str, time: str) -> str:
     return f"【{t}】{content}" if t else content
 
 
+def _user_content_with_materials(m: dict) -> str:
+    """把消息上冻结的素材快照拼进用户正文（无则原样返回）。
+
+    素材作为「冻结消息」进历史（缓存评审：素材移出系统提示）——在引入/变更素材的那一轮
+    冻结、之后不变，于是新增素材只往历史后面追加、不冲前面缓存；analyze_match 仍读 context 最新版。
+    """
+    content = m.get("content", "")
+    parts: list[str] = []
+    resume = (m.get("attached_resume") or "").strip()
+    if resume:
+        parts.append("【已附简历】（analyze_match 将使用其最新全文）\n" + resume[:4000])
+    jds = [str(j) for j in (m.get("attached_jds") or []) if j and str(j).strip()]
+    if jds:
+        parts.append(f"【已附 {len(jds)} 条 JD】\n" + "\n---\n".join(j[:2000] for j in jds))
+    if not parts:
+        return content
+    return "\n\n".join(parts) + "\n\n———\n\n" + content
+
+
 def _system_prompt(context: dict) -> str:
-    resume_text = (context.get("resume_text") or "").strip()
-    jd_texts = [t for t in (context.get("jd_texts") or []) if t and t.strip()]
     role = context.get("target_role") or "（未指定，可询问用户）"
     weeks = context.get("weeks") or 4
     # E3 人设引擎：单人设（语气改为「尾注」每轮置于消息尾部，不再进系统提示）
     persona = context.get("persona") or "default"
     persona_desc = PERSONAS.get(persona, PERSONAS["default"])
-
-    # 把已附材料的实际内容给模型，避免它以为“看不到内容”而反复索取（截断防止过长）
-    material: list[str] = []
-    if resume_text:
-        material.append(
-            "【已附简历】run_analysis 会自动使用其全文，无需让用户重复粘贴：\n" + resume_text[:4000]
-        )
-    else:
-        material.append("【简历】用户尚未提供，请简洁地向其索取（可上传 PDF 或粘贴文本）。")
-    if jd_texts:
-        joined = "\n---\n".join(t[:2000] for t in jd_texts)
-        material.append(f"【已附 {len(jd_texts)} 条 JD】run_analysis 会自动使用其全文：\n" + joined)
-    else:
-        material.append("【JD】用户尚未提供，请向其索取至少一条目标岗位 JD。")
 
     return (
         f"你是 {persona_desc}，面向应届生和实习求职者。"
@@ -213,12 +216,15 @@ def _system_prompt(context: dict) -> str:
         "learning_style / weeks 等用户已给的偏好）生成个性化学习路线，随后简要说明计划思路与本周重点。"
         "不要为生成计划而重复调用 analyze_match。\n\n"
         "风格：中文、简洁、具体、不说空话。\n\n"
-        # 时间与语气都已移出系统提示（缓存评审：每条消息自带时间 + 语气置尾），
-        # 系统提示因此完全无每轮易变项；材料置于末尾（仅中途新增素材时才变）。
+        # 时间、语气、素材都已移出系统提示（缓存评审：每条消息自带时间 + 语气置尾 + 素材作为
+        # 冻结消息进历史）——系统提示因此完全不含 context 素材/时间/语气，对每轮恒定。
         "对话中每条消息开头的【时间】是该消息的发生时刻（用户消息=发送时间、助手消息=回复完成时间）；"
         "以最新一条用户消息的时间为“现在”，涉及“当前/最新/今年”等以它为准；"
         "联网检索请使用与该时间匹配的时间范围（如当前年份），不要默认使用过时年份。\n\n"
-        f"目标岗位：{role}；学习路线周数：{weeks}。\n\n" + "\n\n".join(material)
+        "用户的简历与 JD 会以「【已附简历】/【已附 N 条 JD】」开头的消息出现在对话历史中（其后附正文）；"
+        "analyze_match 始终自动使用最新版本的简历/JD，无需让用户重复粘贴。"
+        "若对话历史中尚无简历、或尚无 JD，就简洁地向用户索取（简历可上传 PDF 或粘贴文本，JD 至少一条目标岗位）。\n\n"
+        f"目标岗位：{role}；学习路线周数：{weeks}。"
     )
 
 
@@ -247,7 +253,9 @@ def run_turn(
         t = (m.get("time") or "").strip()
         if not t and i == last_user:
             t = client_time.strip()
-        llm_messages.append({"role": m["role"], "content": _with_timestamp(m.get("content", ""), t)})
+        # user 消息可能带冻结素材快照（缓存评审：素材作为冻结消息进历史）
+        content = _user_content_with_materials(m) if m["role"] == "user" else m.get("content", "")
+        llm_messages.append({"role": m["role"], "content": _with_timestamp(content, t)})
 
     # 语气作为「尾注」每轮现生成、置于消息尾部（不进历史/不持久化），
     # 使系统提示保持稳定、改语气不冲历史缓存（缓存评审：语气置尾）。

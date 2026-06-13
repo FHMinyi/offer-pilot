@@ -37,9 +37,11 @@ import ChatComposer from '../components/chat/ChatComposer.vue'
 import ReportSidePanel from '../components/chat/ReportSidePanel.vue'
 // 对话回合视图模型 + 纯函数（类型与序列化/投影/定位逻辑均移至 chatModel.ts）。
 import {
+  attachLabel,
   collapseAllReasoning,
   findLastReportBlock,
   localStamp,
+  pendingAttachment,
   snapshotChatContext,
   toPayloadMessages,
 } from '../shared/chatModel'
@@ -229,8 +231,10 @@ async function send(): Promise<void> {
   const userText = raw || '请基于我已提供的简历和 JD 开始分析。'
 
   // 1) 追加用户消息（输入清空后的高度复位由 ChatComposer 内 watch 自动完成）
-  //    盖发送时刻（不可变，注入模型 + 气泡显示）
-  turns.push({ role: 'user', text: userText, time: localStamp() })
+  //    盖发送时刻（不可变，注入模型 + 气泡显示）；素材若较上次冻结有变化，把当前快照冻结到本轮
+  //    （缓存评审：素材作为冻结消息进历史，append-only 不冲缓存）。
+  const attach = pendingAttachment(turns, context.resume_text, context.jd_texts)
+  turns.push({ role: 'user', text: userText, time: localStamp(), ...(attach ?? {}) })
   input.value = ''
   // 用户主动发送：强制贴底并复位 atBottom，确保看到自己刚发出的消息与后续回复
   void scrollToBottom(true)
@@ -447,6 +451,11 @@ onUnmounted(() => {
           <div v-if="turn.role === 'user'" class="msg msg--user">
             <div class="msg__user-wrap">
               <div class="bubble bubble--user">{{ turn.text }}</div>
+              <span
+                v-if="turn.attachedResume || (turn.attachedJds && turn.attachedJds.length)"
+                class="msg-attach"
+                >{{ attachLabel(turn.attachedResume, turn.attachedJds) }}</span
+              >
               <time v-if="turn.time" class="msg-time msg-time--user">{{ turn.time }}</time>
               <button
                 type="button"
@@ -691,6 +700,14 @@ onUnmounted(() => {
   font-size: 0.72rem;
   color: var(--text-muted);
   opacity: 0.75;
+  user-select: none;
+}
+
+/* 素材附加紧凑标记（如「📎 已附简历 · JD ×2」）；不展示正文 */
+.msg-attach {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.85;
   user-select: none;
 }
 .msg-time--assistant {
