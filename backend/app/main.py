@@ -14,6 +14,7 @@ from .db_guard import verify_schema
 from .routers import (
     analysis,
     chat,
+    chat_lab,  # LangGraph 对照小样（可选实验端点；缺实验依赖时端点内优雅降级，不影响启动）
     checkins,
     conversations,
     interviews,
@@ -72,6 +73,7 @@ app.include_router(jobs.router)
 app.include_router(analysis.router)
 app.include_router(skills.router)
 app.include_router(chat.router)
+app.include_router(chat_lab.router)  # POST /api/chat/stream_lab（LangGraph 对照小样）
 app.include_router(conversations.router)
 app.include_router(saved_jds.router)
 app.include_router(tasks.router)

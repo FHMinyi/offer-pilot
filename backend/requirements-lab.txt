@@ -1,0 +1,13 @@
+# OfferPilot · LangGraph 对照小样的可选实验依赖（非运行 MVP 必需）
+#
+# 仅 POST /api/chat/stream_lab（services/agent_langgraph.py）需要。
+# 不安装时：该端点优雅降级为一条提示，主对话 /api/chat/stream 与整体应用启动均不受影响
+# （langgraph/langchain 在 agent_langgraph 内惰性导入，顶层零依赖）。
+#
+# 安装：  pip install -r requirements-lab.txt
+# 走 openai 协议只需 langchain-openai；走 anthropic 协议只需 langchain-anthropic，可按需取舍。
+
+langgraph==1.2.5
+langchain-core>=0.3,<2
+langchain-openai>=0.3,<2     # provider=openai（含 DeepSeek/Moonshot/本地 vLLM 等兼容服务）时需要
+langchain-anthropic>=0.3,<2  # provider=anthropic 时需要
