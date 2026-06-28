@@ -1,0 +1,29 @@
+{
+  "id": "offerpilot-reshape",
+  "name": "offerpilot-reshape",
+  "title": "OfferPilot 流程与匹配重构",
+  "description": "父任务（总盘子，不直接写代码）：统辖两条独立验收的改造线——①匹配准确度修复 ②一波流·周期制改造。顺序：先①后②。本任务负责总目标、任务地图、跨子任务验收与最终整合评审。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "fhminyi",
+  "assignee": "fhminyi",
+  "createdAt": "2026-06-22",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "06-22-match-accuracy",
+    "06-22-one-flow-journey"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
